@@ -1,0 +1,2097 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https:; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+<title>Alloy Rebalancer</title>
+<style>
+  :root { --bg:#fff; --fg:#18181b; --mut:#71717a; --line:#e4e4e7; --panel:#fafafa; --acc:#7b67f6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#18181b; --fg:#f4f4f5; --mut:#a1a1aa; --line:#3f3f46; --panel:#27272a; }
+  }
+  * { box-sizing: border-box; }
+  body { font-family:-apple-system,Segoe UI,sans-serif; background:var(--bg); color:var(--fg);
+         max-width:940px; margin:0 auto; padding:28px 20px 60px; line-height:1.5; }
+  h1 { font-size:1.1rem; margin:0 0 2px; }
+  .sub { color:var(--mut); font-size:.78rem; line-height:1.4; }
+  .topbar { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:18px; }
+  .topbar > div { min-width:0; }
+  @media (max-width:680px){ .topbar { flex-direction:column; } }
+  fieldset { border:1px solid var(--line); border-radius:8px; padding:6px 16px 16px; margin:0 0 16px; }
+  legend { font-size:.78rem; text-transform:uppercase; letter-spacing:.06em; color:var(--mut); padding:0 6px; }
+  .row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }
+  @media (max-width:680px){ .row3 { grid-template-columns:1fr; } }
+  label { font-size:.78rem; color:var(--mut); display:block; }
+  input,select { width:100%; padding:7px 8px; margin-top:3px; background:var(--bg); color:var(--fg);
+          border:1px solid var(--line); border-radius:5px; font-size:.95rem; }
+  button { margin-top:12px; padding:9px 16px; font-size:.88rem; cursor:pointer; border-radius:6px;
+           border:1px solid var(--line); background:var(--panel); color:var(--fg); }
+  button.primary { background:var(--acc); color:#fff; border-color:var(--acc); }
+  button:disabled { opacity:.5; cursor:default; }
+  button.small { font-size:.75rem; padding:3px 9px; margin:0; }
+  .mono { font-family:ui-monospace,Consolas,monospace; font-size:.8rem; word-break:break-all; }
+  .muted { color:var(--mut); }
+  .ok { color:#15803d; font-weight:600; } .err { color:#b91c1c; font-weight:600; } .warn { color:#b45309; font-weight:600; }
+  table { border-collapse:collapse; width:100%; font-size:.85rem; margin-top:8px; }
+  td,th { padding:5px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }
+  th { color:var(--mut); font-weight:500; font-size:.75rem; text-transform:uppercase; letter-spacing:.05em; }
+  td.num,th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  #connect { margin-top:2px; flex:none; white-space:nowrap; display:inline-flex; align-items:center; gap:7px; color:#fff; font-weight:600; border:none;
+             background:linear-gradient(135deg,#3B82F6 0%,#6366F1 50%,#A855F7 100%); }
+  #connect:hover { filter:brightness(1.08); }
+  #connect svg { border-radius:4px; }
+  #connect.linked { background:var(--panel); color:var(--fg); border:1px solid #15803d; }
+  @media (prefers-color-scheme: dark){ #connect.linked { border-color:#4ade80; } }
+  #connect.failed { background:var(--panel); color:var(--fg); border:1px solid #b91c1c; }
+  @media (prefers-color-scheme: dark){ #connect.failed { border-color:#f87171; } }
+  .steps { list-style:none; padding:0; margin:12px 0 0; }
+  .step { border:1px solid var(--line); border-radius:8px; padding:10px 14px; margin-bottom:10px; background:var(--panel); }
+  .step.active { border-color:var(--acc); }
+  .step.done { border-color:#15803d; }
+  .step.failed { border-color:#b91c1c; }
+  .step h3 { margin:0 0 4px; font-size:.95rem; display:flex; justify-content:space-between; gap:8px; }
+  .step .badge { font-size:.72rem; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); white-space:nowrap; }
+  .step .detail { font-size:.82rem; color:var(--mut); }
+  .log { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:8px 10px;
+         font-family:ui-monospace,Consolas,monospace; font-size:.75rem; max-height:220px; overflow:auto; white-space:pre-wrap; margin-top:12px; }
+  .warnbox { margin-top:12px; padding:9px 11px; border-radius:6px; font-size:.82rem; border:1px solid #f59e0b88; background:#f59e0b14; }
+  .okbox { margin-top:12px; padding:9px 11px; border-radius:6px; font-size:.82rem; border:1px solid #15803d88; background:#15803d14; }
+  .errbox { margin-top:12px; padding:9px 11px; border-radius:6px; font-size:.82rem; border:1px solid #b91c1c88; background:#b91c1c14; }
+  .sheet-bg { position:fixed; inset:0; background:#0008; display:none; align-items:center; justify-content:center; z-index:50; }
+  .sheet-bg.on { display:flex; }
+  .sheet { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:18px 20px; max-width:560px; width:92%; max-height:90vh; overflow:auto; }
+  .sheet h2 { font-size:1.05rem; margin:0 0 8px; }
+  .sheet .rows div { display:flex; justify-content:space-between; gap:12px; padding:4px 0; border-bottom:1px solid var(--line); font-size:.85rem; }
+  .sheet .rows div span:last-child { text-align:right; font-family:ui-monospace,Consolas,monospace; font-size:.8rem; word-break:break-all; }
+  .btnrow { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .bar { display:flex; height:14px; border-radius:7px; overflow:hidden; background:var(--line); margin:10px 0 2px; }
+  .bar span { display:block; height:100%; min-width:2px; }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:7px; vertical-align:-1px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div>
+    <h1>Alloy Rebalancer</h1>
+    <div class="sub">Takes one variant out of an Osmosis alloy and puts another back in, bridging between them so the alloy's
+      composition shifts while your alloy balance stays the same, minus gas and bridge fees. Not an arbitrage: the transmuter swaps
+      1:1 with no fee. Routes exist for Alloyed USDC, USDT, BTC and ETH; Alloyed SOL and XRP are composition view only.</div>
+  </div>
+  <button id="connect" title="Connect Keplr so the page can read your addresses and balances. Signing always happens in Keplr."><svg viewBox="0 0 48 48" width="15" height="15" aria-hidden="true" focusable="false"><defs><linearGradient id="kg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3B82F6"/><stop offset=".5" stop-color="#6366F1"/><stop offset="1" stop-color="#A855F7"/></linearGradient></defs><rect width="48" height="48" rx="11" fill="url(#kg)"/><path d="M17 11h5v11.6L32.2 11H38L26.6 24.1 38 37h-6.2L22 25.6V37h-5z" fill="#fff"/></svg><span id="connectLabel">Connect Keplr</span></button>
+</div>
+
+<div class="warnbox" style="margin:0 0 16px">
+  <b>Alpha, unaudited.</b> Every route is verified against decoded payloads and reference implementations, but no route has yet
+  been exercised end to end with a live wallet by anyone but you. Use small amounts first. Routes through Nomic, Chainflip or Injective's
+  Peggy bridge are marked <b>experimental</b>, capped, and need an explicit acknowledgement before they will start.
+</div>
+
+<fieldset>
+  <legend>Status</legend>
+  <table id="statusTable"><thead><tr><th>Chain</th><th>Asset</th><th class="num">Balance</th><th class="num">Gas</th><th></th></tr></thead><tbody>
+    <tr><td>Osmosis</td><td id="alloySym">allUSDC</td><td class="num" id="bal_osmo">–</td><td class="num" id="gas_osmo">–</td><td><button class="small" data-fund="osmo" disabled>Fund gas</button></td></tr>
+    <tr><td>Avalanche</td><td>USDC</td><td class="num" id="bal_avax">–</td><td class="num" id="gas_avax">–</td><td><button class="small" data-fund="avax" disabled>Fund gas</button></td></tr>
+    <tr><td>Ethereum</td><td id="ethSym">USDC</td><td class="num" id="bal_eth">–</td><td class="num" id="gas_eth">–</td><td><button class="small" data-fund="eth" disabled>Fund gas (5)</button></td></tr>
+    <tr><td>Injective</td><td id="injSym">USDC.inj</td><td class="num" id="bal_inj">–</td><td class="num" id="gas_inj">–</td><td><button class="small" data-fund="inj" disabled>Fund gas</button></td></tr>
+    <tr><td>Noble</td><td>USDC</td><td class="num" id="bal_noble">–</td><td class="num" id="gas_noble">–</td><td><button class="small" data-fund="noble" disabled>Fund gas</button></td></tr>
+    <tr id="row_btc" style="display:none"><td>Bitcoin</td><td>BTC (Keplr)</td><td class="num" id="bal_btc">–</td><td class="num muted">miner fees from balance</td><td></td></tr>
+  </tbody></table>
+  <div class="muted" style="font-size:.78rem;margin-top:6px">Fund gas swaps 1 allUSDC (5 for Ethereum, since Axelar's flat fee is about $1.10) into that chain's fee token and delivers it to your address there. Noble charges fees in USDC.</div>
+  <div id="strandedBox"></div>
+</fieldset>
+
+<fieldset>
+  <legend id="poolLegend">Alloyed USDC</legend>
+  <div style="display:grid;grid-template-columns:minmax(300px,1fr) 1fr;gap:12px">
+    <div>
+      <label for="alloy">Alloy</label>
+      <select id="alloy"><option value="">loading alloys…</option></select>
+    </div>
+    <div class="muted" style="font-size:.8rem;align-self:end;padding-bottom:8px" id="poolMeta"></div>
+  </div>
+  <table><thead><tr><th>Variant</th><th class="num">Balance</th><th class="num">Share</th><th>Limiters</th></tr></thead>
+  <tbody id="poolRows"><tr><td colspan="4" class="muted">loading…</td></tr></tbody></table>
+</fieldset>
+
+<fieldset>
+  <legend>Cycle</legend>
+  <div class="row3">
+    <div>
+      <label for="reduce">Reduce in alloy</label>
+      <select id="reduce"></select>
+    </div>
+    <div>
+      <label for="increase">Increase in alloy</label>
+      <select id="increase"></select>
+    </div>
+    <div>
+      <label for="amount">Alloy per cycle</label>
+      <input id="amount" value="10000" inputmode="decimal">
+    </div>
+  </div>
+  <div id="estimate" class="muted" style="margin-top:8px;font-size:.85rem">–</div>
+  <label style="display:flex;gap:8px;align-items:flex-start;margin-top:10px;font-size:.82rem;color:var(--fg)">
+    <input type="checkbox" id="freeExit" style="width:auto;margin:3px 0 0">
+    <span>Let Skip choose the exit route. When Skip finds a better price through other pools it will take it, but a route that
+      bypasses pool 3497 only <b>dilutes</b> the reduced variant's share instead of removing any of it from the alloy.
+      Applies to exits through USDC.noble; exits into USDC.inj or USDC.axl are always the page's own pool 3497 swap.</span>
+  </label>
+  <div id="quotes" class="muted" style="margin-top:8px;font-size:.82rem"></div>
+  <label id="ackRow" style="display:none;gap:8px;align-items:flex-start;margin-top:10px;font-size:.82rem;color:var(--fg)">
+    <input type="checkbox" id="ackExperimental" style="width:auto;margin:3px 0 0">
+    <span id="ackText"></span>
+  </label>
+  <div class="btnrow">
+    <button id="start" class="primary" disabled>Start cycle</button>
+    <button id="abandon" style="display:none">Abandon this cycle</button>
+  </div>
+  <div id="cycleBox"></div>
+  <ol class="steps" id="steps"></ol>
+</fieldset>
+
+<fieldset>
+  <legend>Log</legend>
+  <div class="log" id="log" style="margin-top:6px;max-height:280px"></div>
+</fieldset>
+
+<div class="sheet-bg" id="sheetBg"><div class="sheet" id="sheet"></div></div>
+
+<script>
+"use strict";
+/* ============================================================================
+   Everything here is pinned. Skip is asked for a route, and the answer is checked
+   field by field against these constants before anything is signed. A route that
+   deviates in any way (a different pool, a different contract, an extra bridge, a
+   recipient that is not you) is refused, never "adjusted".
+   ============================================================================ */
+const K = {
+  ALL:       "factory/osmo147h5x9pcj7lm0cttlaefx6sqq5vdfnmwfcqxkmjd7exqm9gc7grqhr75m0/alloyed/allUSDC",
+  NOBLE:     "ibc/498A0751C798A0D9A389AA3691123DADA57DAA4FE165D5C75894505B876BA6E4",
+  INJ_IBC:   "ibc/794C7D7F3B857713878A3A1927251FA6AC1EEE520424C1F6FAFE9BA26D476138",
+  AXL:       "ibc/D189335C6E4A68B513C10AB227BF1C1D38C746766278BA3EEB4FB14124F1D858",
+  INJ_ERC20: "erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a",   // bank denom on injective-1 (EIP-55 case matters)
+  INJ_EVM_USDC: "0xa00C59fF5a080D2b954d0c75e46E22a0c371235a",      // the same token as seen from Injective's EVM (Skip chain 1776)
+  POOL: "3497",
+  ENTRY_POINT: "osmo10a3k4hvk37cc4hnxctw4p95fhscd2z6h2rmx0aukc6rm8u9qqx9smfsh7u",   // Skip swap entry point on Osmosis
+  NOBLE_ORBITER: "noble15xt7kx5mles58vkkfxvf0lq78sw04jajvfgd4d",                 // Noble orbiter module (CCTP forwarder)
+  AXELAR_GMP: "axelar1dv4u5k73pzqrxlzujxg3qp8kvc3pje7jtdvu72npnt5zhq05ejcsn5qme5", // Axelar GMP account that IBC transfers to Axelar target
+  AXELAR_RECEIVER_ETH: "0xB773bCc5B325ad9AC6B36e1A046AD4466833A16E",             // Skip's Axelar GMP receiver on Ethereum (both directions)
+  CCTP_V2_ADAPTER: "0x400BB58033a7763A834199190B68F66A2661aE73",                 // Skip's CCTP v2 adapter (same address on Avalanche, Ethereum, Injective EVM)
+  OSMO_TO_NOBLE: "channel-750", OSMO_TO_INJ: "channel-122", OSMO_TO_AXELAR: "channel-208", OSMO_TO_HUB: "channel-0", HUB_TO_OSMO: "channel-141", INJ_TO_OSMO: "channel-8", NOBLE_TO_OSMO: "channel-1",
+  /* IBC Eureka (Cosmos Hub <-> Ethereum) as Skip drives it */
+  EUREKA_ETH: "0x47a4b9F949E98a49Be500753c19a8f9c9d6b7689",                                   // Skip's Eureka contract on Ethereum
+  HUB_ENTRY: "cosmos1lqu9662kd4my6dww4gzp3730vew0gkwe0nl9ztjh0n5da0a8zc4swsvd22",              // Skip's entry point on the Hub (IBC receiver + callback)
+  HUB_EUREKA_ACTION: "cosmos1clswlqlfm8gpn7n5wu0ypu0ugaj36urlhj7yz30hn7v7mkcm2tuqy9f8s5",      // Skip's Eureka action contract on the Hub
+  HUB_EUREKA_CHANNEL: "08-wasm-1369",                                                          // the Hub's Eureka client for Ethereum
+  MAX_BRIDGE_FEE_USD: 3,                                                                       // cap on any single Axelar or Eureka fee quoted in USD
+  /* Injective Peggy (Ethereum <-> Injective), the bridge behind USDT.eth.inj */
+  PEGGY_ETH: "0xF955C57f9EA9Dc8781965FEaE0b6A2acE2BAD6f3",      // Peggy contract on Ethereum (from Injective's peggy params)
+  PEGGY_SEND_SELECTOR: "b24614f2",                                // sendToInjective(address,bytes32,uint256,string)
+  PEGGY_BRIDGE_FEE_USDT: "5000000",                               // 5 USDT: what relayers were accepting for USDT withdrawals when this was written
+  OSMO_TO_NOMIC: "channel-6897", NOMIC_TO_OSMO: "channel-1",
+  /* Nomic (nBTC) and Chainflip (WBTC <-> BTC), the pieces behind WBTC.eth.axl <-> nBTC */
+  NOMIC_RELAYERS: ["https://relayer.nomic.io:8443", "https://relayer.nomic.mappum.io:8443"],   // ALL must serve the same signatory set and accept the address
+  NBTC: "ibc/75345531D87BD90BF108BE7240BD721CB2CB0A1F16D4EBA71B09EC3C43E15C8F",   // nBTC on Osmosis, 14 decimals (1 sat = 1e6 units)
+  CHAINFLIP: "https://chainflip-swap.chainflip.io",
+  CHAINFLIP_RETRY_BLOCKS: 150,          // fill-or-kill retry window (~15 min of Chainflip blocks) before a refund
+  MEMPOOL: "https://mempool.space/api",
+  ERC20_TRANSFER_SELECTOR: "a9059cbb",  // transfer(address,uint256)
+  /* What Skip's EVM adapters are called with, decoded and allowlisted argument by argument (see checkEvmTx) */
+  CCTP_DOMAIN: { "1": 0, "43114": 1, "noble-1": 4, "1776": 29 },
+  CCTP_V2_SELECTOR: "d1cc447d", CCTP_V1_SELECTOR: "d77d6ec0", AXELAR_SELECTOR: "d421c105", EUREKA_SELECTOR: "eecf31f9",
+  CCTP_V2_RELAYER: "0xfc05aD74C6FE2e7046E091D6Ad4F660D2A159762",        // Skip's CCTP v2 relayer (also returned in the quote)
+  CCTP_V1_FEE_RECIPIENT: "0x691cf4641d5608f085b2c1921172120bb603d074",  // Skip's CCTP v1 fee collector on Avalanche and Ethereum
+  EUREKA_FEE_RECIPIENT: "0x33c4dad158f1e2ccf97bf17d1574d5b7b9f43002",   // Skip's Eureka fee collector on Ethereum
+  EUREKA_ETH_CLIENT: "cosmoshub-0",                                       // the Ethereum-side Eureka client for the Hub
+  INJ_EVM_CHAIN: "1776",
+  /* The two EVM hubs. CCTP v1 (Noble side) uses a different Skip adapter per chain; Axelar GMP only runs through Ethereum. */
+  HUB: {
+    /* maxOrbiterFee: Noble's orbiter charges by destination; observed 73-79 uusdc toward Avalanche and 82,551-84,086 toward Ethereum */
+    /* flatLoss: the CCTP relay out of Noble costs a flat ~0.02 USDC toward Avalanche and ~0.11 toward Ethereum, which
+       exceeds 5 bps on a small test cycle; a quote may lose up to this much regardless of size */
+    "43114": { name: "Avalanche", usdc: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E", cctpDomain: 1, cctpV1Adapter: "0xB19Ff56BD455C2515207BDbdEDC68B57fBA9A78D", maxOrbiterFee: 10000n,  flatLoss: 50000n },
+    "1":     { name: "Ethereum",  usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", cctpDomain: 0, cctpV1Adapter: "0xf33e750336e9C0D4E2f4c0D450d753030693CC71", maxOrbiterFee: 300000n, flatLoss: 300000n },
+  },
+  EVM: {
+    "43114": { hex: "0xa86a", name: "Avalanche C-Chain", sym: "AVAX", rpc: ["https://api.avax.network/ext/bc/C/rpc"], explorer: ["https://snowtrace.io"] },
+    "1":     { hex: "0x1",    name: "Ethereum",          sym: "ETH",  rpc: ["https://ethereum-rpc.publicnode.com", "https://eth.llamarpc.com"], explorer: ["https://etherscan.io"] },
+    "1776":  { hex: "0x6f0",  name: "Injective EVM",     sym: "INJ",  rpc: ["https://sentry.evm-rpc.injective.network"], explorer: ["https://blockscout.injective.network"] },
+  },
+  SKIP: "https://api.skip.build",
+  ASSETLIST: "https://raw.githubusercontent.com/osmosis-labs/assetlists/main/osmosis-1/generated/frontend/assetlist.json",
+  OSMO_REST:  ["https://lcd.osmosis.zone", "https://osmosis-api.polkachu.com", "https://rest.lavenderfive.com:443/osmosis"],
+  INJ_REST:   ["https://injective-api.polkachu.com", "https://rest.lavenderfive.com:443/injective", "https://injective-rest.publicnode.com", "https://sentry.lcd.injective.network:443"],
+  NOBLE_REST: ["https://noble-api.polkachu.com", "https://rest.lavenderfive.com:443/noble", "https://noble-rest.owallet.io"],
+  INJ_GAS_PRICE: 160000000,    // inj per gas, the chain's fixed minimum
+  NOBLE_GAS_PRICE: 0.1,        // uusdc per gas
+  OSMO_MIN_GAS_PRICE: 0.03,    // uosmo per gas floor; the live EIP-1559 base fee is used if higher
+  MAX_LOSS_BPS: 5,             // a CCTP stage quoting less than 99.95% out is refused
+  MAX_GMP_VALUE_WEI: 2000000000000000n,   // 0.002 ETH cap on the native value an Axelar GMP call may carry as relayer fee
+  DEC: 6,
+  /* the alloys offered, pinned rather than discovered; variants are still read live from each contract */
+  ALLOYS: [
+    { sym: "allBTC",  pool: "1868", contract: "osmo1z6r6qdknhgsc0zeracktgpcxf43j6sekq07nw8sxduc9lg0qjjlqfu25e3", dec: 8 },
+    { sym: "allETH",  pool: "1878", contract: "osmo1k6c8jln7ejuqwtqmay3yvzrg3kueaczl96pk067ldg8u835w0yhsw27twm", dec: 18 },
+    { sym: "allSOL",  pool: "1925", contract: "osmo1n3n75av8awcnw4jl62n3l48e6e4sxqmaf97w5ua6ddu4s475q5qq9udvx4", dec: 9 },
+    { sym: "allUSDC", pool: "3497", contract: "osmo147h5x9pcj7lm0cttlaefx6sqq5vdfnmwfcqxkmjd7exqm9gc7grqhr75m0", dec: 6 },
+    { sym: "allUSDT", pool: "1816", contract: "osmo1em6xs47hd82806f5cxgyufguxrrc7l0aqx7nzzptjuqgswczk8csavdxek", dec: 6 },
+    { sym: "allXRP",  pool: "2434", contract: "osmo1qnglc04tmhg32uc4kxlxh55a5cmhj88cpa3rmtly484xqu82t79sfv94w0", dec: 6 },
+  ],
+  /* Alloyed USDT's Injective variant: Ethereum USDT over Peggy. Skip does not drive Peggy, so these legs are built here. */
+  PEGGY_PAIR: { alloySym: "allUSDT", inj: "ibc/2AD3C64D19ADFBB522CD738B58F421102143F827C1CAFF574A8BF0B81017D53D", injDenom: "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7", token: "0xdac17f958d2ee523a2206206994597c13d831ec7", sym: "USDT", dec: 6 },
+  /* Alloys whose Axelar variant and Cosmos Hub (Eureka) variant are the same Ethereum token: those two can be exchanged
+     through Ethereum with Skip. nBTC and USDT.eth.inj have their own bridges below; the remaining variants have none. */
+  ETH_PAIRS: {
+    allBTC:  { axl: "ibc/D1542AA8762DB13087D8364F3EA6509FD6F009A34F00426AF9E4F9FA85CBBF1F", atom: "ibc/88386AC48152D48B34B082648DF836F975506F0B57DBBFC10A54213B1BF484CB", token: "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599", sym: "WBTC", dec: 8 },
+    allETH:  { axl: "ibc/EA1D43981D5C9A1C4AAEA9C23BB1D4FA126BA9BC7020A25E0AE4AA841EA25DC5", atom: "ibc/20850C646CDDDC2270E9BBDB08558B5FEE57B647EC6827F41096AABFD8A0471B", token: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", sym: "WETH", dec: 18 },
+    allUSDT: { axl: "ibc/8242AD24008032E457D2E12D46588FD39FB54FB29680C6C7663D296B383C37C4", atom: "ibc/7BC2F718C47C0749791F2612A914C8C39D1A4F533A27AF7285D924D4B617DDA6", token: "0xdac17f958d2ee523a2206206994597c13d831ec7", sym: "USDT", dec: 6 },
+  },
+  STORE: "rebalance.cycle.v3",
+};
+/* the alloys offered: denom -> {denom, sym, pool, contract, dec}; FROZEN[denom] carries the reason cycling is disabled */
+const ALLOYS = {}; let ALLOY = K.ALL; const FROZEN = {};
+/* names and decimals come from the Osmosis frontend assetlist, which qualifies every variant (USDC.noble, nBTC, ...) */
+const symOf = d => ASSETS[d]?.symbol || (d.includes("/") ? d.split("/").pop() : d);
+const alloyName = a => "Alloyed " + a.sym.replace(/^all/, "");
+/* gas purchases: what is bought, with how much allUSDC, and the least USD value acceptable back */
+const GAS = {
+  osmo:  { amount: "1000000", minUsd: 0.85, dst: ["uosmo", "osmosis-1"],        dec: 6,  sym: "OSMO" },
+  avax:  { amount: "1000000", minUsd: 0.85, dst: ["avalanche-native", "43114"], dec: 18, sym: "AVAX", axelarChain: "Avalanche" },
+  eth:   { amount: "5000000", minUsd: 3.0,  dst: ["ethereum-native", "1"],      dec: 18, sym: "ETH",  axelarChain: "Ethereum" },
+  inj:   { amount: "1000000", minUsd: 0.85, dst: ["inj", "injective-1"],        dec: 18, sym: "INJ" },
+  noble: { amount: "1000000", minUsd: 0.85, dst: ["uusdc", "noble-1"],          dec: 6,  sym: "USDC" },
+};
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function log(...a) {
+  console.log("[rebalance]", ...a);
+  const el = $("log"); el.textContent += new Date().toISOString().slice(11,19) + "  " + a.map(x => typeof x === "string" ? x : JSON.stringify(x)).join(" ") + "\n";
+  el.scrollTop = el.scrollHeight;
+}
+
+/* ---------------- amounts ---------------- */
+function parseAmount(s, dec) {
+  s = String(s).trim().replace(/,/g, "");
+  if (!/^\d+(\.\d+)?$/.test(s)) throw new Error("amount must be a positive decimal number");
+  const [ip, fp = ""] = s.split(".");
+  if (fp.length > dec) throw new Error(`at most ${dec} decimal places`);
+  const v = BigInt(ip) * 10n ** BigInt(dec) + BigInt((fp + "0".repeat(dec)).slice(0, dec) || "0");
+  if (v <= 0n) throw new Error("amount must be positive");
+  return v.toString();
+}
+/* exact, for confirmations and logs */
+function fmtUnits(raw, dec = K.DEC) {
+  const n = BigInt(raw); const s = n.toString().padStart(dec + 1, "0");
+  const ip = s.slice(0, -dec).replace(/\B(?=(\d{3})+(?!\d))/g, ","), fp = s.slice(-dec).replace(/0+$/, "");
+  return fp ? `${ip}.${fp}` : ip;
+}
+/* two decimals, floored, for balances; a positive amount that rounds to nothing shows as <0.01 */
+function fmt2(raw, dec = K.DEC) {
+  const n = BigInt(raw); if (n === 0n) return "0.00";
+  const cents = n / 10n ** BigInt(dec - 2);
+  if (cents === 0n) return "<0.01";
+  const s = cents.toString().padStart(3, "0");
+  return s.slice(0, -2).replace(/\B(?=(\d{3})+(?!\d))/g, ",") + "." + s.slice(-2);
+}
+const pct = (a, b) => b === 0n ? "–" : (Number(a * 1000000n / b) / 10000).toFixed(2) + "%";
+/* the quote may lose at most MAX_LOSS_BPS, or `flat` base units when that is more (flat relay fees on small amounts) */
+function withinLoss(amountIn, amountOut, flat = 0n) {
+  const a = BigInt(amountIn), o = BigInt(amountOut);
+  return o * 10000n >= a * (10000n - BigInt(K.MAX_LOSS_BPS)) || a - o <= BigInt(flat);
+}
+const nearly = (received, expected) => BigInt(received) >= BigInt(expected) * 999n / 1000n;
+
+/* ---------------- bech32 (checksum-verified, no regexes) ---------------- */
+const B32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+function b32Polymod(values) {
+  const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  let chk = 1;
+  for (const v of values) { const top = chk >> 25; chk = ((chk & 0x1ffffff) << 5) ^ v; for (let i = 0; i < 5; i++) if ((top >> i) & 1) chk ^= GEN[i]; }
+  return chk;
+}
+function b32HrpExpand(hrp) { const a = [], b = []; for (const c of hrp) { a.push(c.charCodeAt(0) >> 5); b.push(c.charCodeAt(0) & 31); } return a.concat([0], b); }
+function bech32Decode(addr) {
+  if (typeof addr !== "string" || addr !== addr.toLowerCase()) return null;
+  const pos = addr.lastIndexOf("1"); if (pos < 1 || pos + 7 > addr.length) return null;
+  const hrp = addr.slice(0, pos), data = [];
+  for (const c of addr.slice(pos + 1)) { const v = B32.indexOf(c); if (v < 0) return null; data.push(v); }
+  if (b32Polymod(b32HrpExpand(hrp).concat(data)) !== 1) return null;
+  return { hrp, words: data.slice(0, -6) };
+}
+function bech32Encode(hrp, words) {
+  const pm = b32Polymod(b32HrpExpand(hrp).concat(words, [0,0,0,0,0,0])) ^ 1;
+  const chk = []; for (let i = 0; i < 6; i++) chk.push((pm >> 5 * (5 - i)) & 31);
+  return hrp + "1" + words.concat(chk).map(v => B32[v]).join("");
+}
+function convertBits(data, from, to, pad) {
+  let acc = 0, bits = 0; const out = [], max = (1 << to) - 1;
+  for (const v of data) { acc = (acc << from) | v; bits += from; while (bits >= to) { bits -= to; out.push((acc >> bits) & max); } }
+  if (pad) { if (bits) out.push((acc << (to - bits)) & max); }
+  else if (bits >= from || ((acc << (to - bits)) & max)) return null;
+  return out;
+}
+function bech32Rehrp(addr, hrp) { const d = bech32Decode(addr); if (!d) throw new Error("bad bech32 " + addr); return bech32Encode(hrp, d.words); }
+/* bech32 -> 0x of the raw 20 bytes. For Injective this IS the EVM address (ethsecp256k1 accounts); for
+   Noble it is how CCTP's bytes32 mint recipient is formed (left-padded). */
+function bech32ToHex(addr) {
+  const d = bech32Decode(addr); if (!d) throw new Error("bad bech32 " + addr);
+  const bytes = convertBits(d.words, 5, 8, false); if (!bytes || bytes.length !== 20) throw new Error("not a 20-byte address: " + addr);
+  return "0x" + bytes.map(b => b.toString(16).padStart(2, "0")).join("");
+}
+const pad32 = h => h.replace(/^0x/, "").toLowerCase().padStart(64, "0");
+const sameAddr = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+const hexToBytes = h => Uint8Array.from((h.replace(/^0x/i, "").match(/../g) || []).map(x => parseInt(x, 16)));
+
+/* ---------------- protobuf (hand-written, byte-checked by test-rebalance.mjs) ---------------- */
+const te = new TextEncoder();
+const U64_MAX = 18446744073709551615n;
+function uint64Value(v, label = "value") {
+  const s = String(v); if (!/^\d+$/.test(s)) throw new RangeError(`${label} must be an unsigned whole number.`);
+  const n = BigInt(s); if (n > U64_MAX) throw new RangeError(`${label} exceeds uint64.`); return n;
+}
+function varint(n){ n=BigInt(n); if(n<0n)throw new RangeError("varint cannot encode a negative value"); const o=[]; for(;;){ let b=Number(n & 0x7Fn); n >>= 7n; if(n){o.push(b|0x80)} else {o.push(b); break} } return Uint8Array.from(o); }
+function cat(...a){ const t=a.reduce((s,x)=>s+x.length,0); const o=new Uint8Array(t); let i=0; for(const x of a){o.set(x,i); i+=x.length} return o; }
+function tag(f,w){ return varint((f<<3)|w); }
+function bytesF(f,b){ return cat(tag(f,2), varint(b.length), b); }
+function strF(f,s){ return bytesF(f, te.encode(s)); }
+function u64F(f,v){ return cat(tag(f,0), varint(uint64Value(v))); }
+const Any  = (u,v) => cat(strF(1,u), bytesF(2,v));
+const Coin = (d,a) => cat(strF(1,d), strF(2,a));
+function Height(rev,h){ let o=new Uint8Array(0); if(BigInt(rev||0)!==0n)o=cat(o,u64F(1,rev)); if(BigInt(h||0)!==0n)o=cat(o,u64F(2,h)); return o; }
+function MsgTransfer(p){
+  let m = cat(strF(1,p.sourcePort), strF(2,p.sourceChannel), bytesF(3,Coin(p.token.denom,p.token.amount)), strF(4,p.sender), strF(5,p.receiver));
+  m = cat(m, bytesF(6, Height(p.timeoutHeight?.revisionNumber, p.timeoutHeight?.revisionHeight)));   // non-optional: always emitted
+  if (BigInt(p.timeoutTimestamp||0)!==0n) m = cat(m, u64F(7,p.timeoutTimestamp));
+  if (p.memo) m = cat(m, strF(8, p.memo));
+  return m;
+}
+/* MsgExecuteContract: sender=1, contract=2, msg=3 (bytes), funds=5 (repeated Coin). Field 4 is reserved. */
+function MsgExecuteContract(p){
+  let m = cat(strF(1,p.sender), strF(2,p.contract), bytesF(3, p.msg));
+  for (const c of p.funds || []) m = cat(m, bytesF(5, Coin(c.denom, c.amount)));
+  return m;
+}
+/* osmosis.poolmanager MsgSwapExactAmountIn: sender=1, routes=2 (repeated {pool_id=1 uint64, token_out_denom=2}),
+   token_in=3 (Coin), token_out_min_amount=4 (string). Field numbers read from the poolmanager codec and the
+   encoding confirmed by the chain's own /cosmos/tx/v1beta1/decode. */
+function SwapAmountInRoute(p){ let r=new Uint8Array(0); if(BigInt(p.poolId)!==0n) r=cat(r,u64F(1,p.poolId)); if(p.tokenOutDenom) r=cat(r,strF(2,p.tokenOutDenom)); return r; }
+function MsgSwapExactAmountIn(p){
+  let m = strF(1,p.sender);
+  for (const r of p.routes) m = cat(m, bytesF(2, SwapAmountInRoute(r)));
+  m = cat(m, bytesF(3, Coin(p.tokenIn.denom, p.tokenIn.amount)));
+  return cat(m, strF(4, p.tokenOutMinAmount));
+}
+/* injective.peggy.v1.MsgSendToEth: sender=1, eth_dest=2, amount=3 (Coin), bridge_fee=4 (Coin). Confirmed by Injective's own
+   /cosmos/tx/v1beta1/decode. */
+function MsgSendToEth(p){ return cat(strF(1,p.sender), strF(2,p.ethDest), bytesF(3,Coin(p.amount.denom,p.amount.amount)), bytesF(4,Coin(p.bridgeFee.denom,p.bridgeFee.amount))); }
+/* ABI calldata for Peggy.sendToInjective(address token, bytes32 destination, uint256 amount, string data) with empty data.
+   The destination is the Injective account's 20 bytes left-padded to 32, which is how peggo reads it back. */
+function peggySendCalldata(token, destinationHex, amount) {
+  const head = K.PEGGY_SEND_SELECTOR + pad32(token) + pad32(destinationHex) + BigInt(amount).toString(16).padStart(64, "0") + (0x80).toString(16).padStart(64, "0");
+  return "0x" + head + "0".repeat(64);   // offset 0x80 -> string length 0, no bytes
+}
+function TxBody(anys, memo){ let b=new Uint8Array(0); for(const a of anys) b=cat(b,bytesF(1,a)); if(memo) b=cat(b,strF(2,memo)); return b; }
+function Fee(amts,gas){ let f=new Uint8Array(0); for(const c of amts) f=cat(f,bytesF(1,Coin(c.denom,c.amount))); return cat(f,u64F(2,gas)); }
+function SignerInfo(pkAny,mode,seq){ let s=new Uint8Array(0); if(pkAny)s=cat(s,bytesF(1,pkAny)); s=cat(s,bytesF(2,bytesF(1,u64F(1,mode)))); if(BigInt(seq)!==0n)s=cat(s,u64F(3,seq)); return s; }
+function AuthInfo(sis,fee){ let a=new Uint8Array(0); for(const si of sis) a=cat(a,bytesF(1,si)); return cat(a,bytesF(2,fee)); }
+function TxRaw(body,ai,sigs){ let t=cat(bytesF(1,body),bytesF(2,ai)); for(const s of sigs) t=cat(t,bytesF(3,s)); return t; }
+const b64   = u => btoa(String.fromCharCode(...u));
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+async function txHashOf(raw) { const h = await crypto.subtle.digest("SHA-256", raw); return Array.from(new Uint8Array(h)).map(b=>b.toString(16).padStart(2,"0")).join("").toUpperCase(); }
+
+/* Skip hands back msgs as JSON. Encode exactly the two types this flow uses; anything else is refused. */
+function skipMsgToAny(m) {
+  const j = typeof m.msg === "string" ? JSON.parse(m.msg) : m.msg;
+  if (m.msg_type_url === "/cosmwasm.wasm.v1.MsgExecuteContract") {
+    return Any(m.msg_type_url, MsgExecuteContract({ sender: j.sender, contract: j.contract,
+      msg: te.encode(typeof j.msg === "string" ? j.msg : JSON.stringify(j.msg)), funds: j.funds || [] }));
+  }
+  if (m.msg_type_url === "/ibc.applications.transfer.v1.MsgTransfer") {
+    return Any(m.msg_type_url, MsgTransfer({ sourcePort: j.source_port, sourceChannel: j.source_channel, token: j.token,
+      sender: j.sender, receiver: j.receiver,
+      timeoutHeight: { revisionNumber: j.timeout_height?.revision_number || 0, revisionHeight: j.timeout_height?.revision_height || 0 },
+      timeoutTimestamp: j.timeout_timestamp || 0, memo: j.memo || "" }));
+  }
+  throw new Error("refusing to encode unexpected message type " + m.msg_type_url);
+}
+
+/* ---------------- Nomic deposit addresses (reimplemented from nomic-bitcoin-js; byte-identical in test) ----------------
+   A deposit address commits to an IBC destination: BTC sent to it is minted as nBTC and IBC-transferred to `receiver`
+   on Osmosis. The address is a P2WSH of a weighted multisig over Nomic's current signatory set with the commitment
+   pushed and dropped. Every relayer in K.NOMIC_RELAYERS must return the same signatory set and accept the address,
+   because an address Nomic never learns about swallows the deposit. */
+function nomicEncodeIbc(d) {
+  const str = x => cat(Uint8Array.of(x.length), te.encode(x));
+  const ts = new Uint8Array(8); new DataView(ts.buffer).setBigUint64(0, BigInt(d.timeoutTimestamp));
+  const ml = new Uint8Array(2); new DataView(ml.buffer).setUint16(0, d.memo.length);
+  return cat(str(d.sourcePort), str(d.sourceChannel), str(d.receiver), str(d.sender), ts, ml, te.encode(d.memo));
+}
+/* Bitcoin script number: minimal little-endian, sign bit in the top bit of the last byte */
+function scriptNum(n) {
+  n = BigInt(n); if (n === 0n) return new Uint8Array(0);
+  const neg = n < 0n; let v = neg ? -n : n; const out = [];
+  while (v > 0n) { out.push(Number(v & 0xffn)); v >>= 8n; }
+  if (out[out.length - 1] & 0x80) out.push(neg ? 0x80 : 0x00); else if (neg) out[out.length - 1] |= 0x80;
+  return Uint8Array.from(out);
+}
+/* data push with bitcoinjs' minimal encoding: empty -> OP_0, 1..16 -> OP_1..OP_16, 0x81 -> OP_1NEGATE, else pushdata */
+function pushData(b) {
+  if (b.length === 0) return Uint8Array.of(0x00);
+  if (b.length === 1 && b[0] >= 1 && b[0] <= 16) return Uint8Array.of(0x50 + b[0]);
+  if (b.length === 1 && b[0] === 0x81) return Uint8Array.of(0x4f);
+  if (b.length < 0x4c) return cat(Uint8Array.of(b.length), b);
+  if (b.length <= 0xff) return cat(Uint8Array.of(0x4c, b.length), b);
+  return cat(Uint8Array.of(0x4d, b.length & 0xff, b.length >> 8), b);
+}
+const OPC = { CHECKSIG: 0xac, IF: 0x63, ELSE: 0x67, ENDIF: 0x68, ZERO: 0x00, SWAP: 0x7c, ADD: 0x93, GREATERTHAN: 0xa0, DROP: 0x75 };
+function nomicRedeemScript(sigset, commitment) {
+  const vp = sigset.signatories.reduce((a, x) => a + BigInt(x.voting_power), 0n);
+  const vpBits = vp === 0n ? 0 : vp.toString(2).length;
+  const trunc = BigInt(vpBits < 23 ? 0 : vpBits - 23);
+  const [num, den] = sigset.threshold;
+  const parts = [], first = sigset.signatories[0];
+  parts.push(pushData(Uint8Array.from(first.pubkey)), Uint8Array.of(OPC.CHECKSIG, OPC.IF), pushData(scriptNum(BigInt(first.voting_power) >> trunc)), Uint8Array.of(OPC.ELSE, OPC.ZERO, OPC.ENDIF));
+  for (const x of sigset.signatories.slice(1)) parts.push(Uint8Array.of(OPC.SWAP), pushData(Uint8Array.from(x.pubkey)), Uint8Array.of(OPC.CHECKSIG, OPC.IF), pushData(scriptNum(BigInt(x.voting_power) >> trunc)), Uint8Array.of(OPC.ADD, OPC.ENDIF));
+  parts.push(pushData(scriptNum((vp * BigInt(num) / BigInt(den)) >> trunc)), Uint8Array.of(OPC.GREATERTHAN), pushData(commitment), Uint8Array.of(OPC.DROP));
+  return cat(...parts);
+}
+const sha256 = async b => new Uint8Array(await crypto.subtle.digest("SHA-256", b));
+async function nomicDepositAddress(sigset, ibcDest) {
+  const broadcastBytes = cat(Uint8Array.of(1), nomicEncodeIbc(ibcDest));
+  const commitment = cat(Uint8Array.of(0), await sha256(broadcastBytes));
+  const script = nomicRedeemScript(sigset, commitment);
+  return { address: bech32Encode("bc", [0].concat(convertBits(await sha256(script), 8, 5, true))), broadcastBytes };
+}
+const nomicWithdrawMemo = btcAddress => JSON.stringify({ type: "bitcoin", data: btcAddress });
+/* the same signatory set from every relayer, or nothing */
+function sameSigset(a, b) { return a.index === b.index && JSON.stringify(a.threshold) === JSON.stringify(b.threshold) && JSON.stringify(a.signatories) === JSON.stringify(b.signatories); }
+/* Chainflip: fill-or-kill minimum price as X128, matching the SDK's arithmetic (same decimals on both sides for WBTC/BTC) */
+function chainflipMinPriceX128(estimatedPrice, tolerancePercent, srcDec, dstDec) {
+  const [ip, fp = ""] = String(estimatedPrice).split("."); const scale = 30n;
+  const price = BigInt(ip + fp.padEnd(Number(scale), "0").slice(0, Number(scale)));                 // price * 10^30
+  const tol = BigInt(Math.round(tolerancePercent * 1000));                                          // percent * 1000
+  const minPrice = price * (100000n - tol) / 100000n;                                              // still * 10^30
+  let x = minPrice * (1n << 128n);
+  const shift = dstDec - srcDec; if (shift >= 0) x *= 10n ** BigInt(shift); else x /= 10n ** BigInt(-shift);
+  return (x / 10n ** scale).toString();
+}
+/* a Chainflip deposit channel is trusted only after the status endpoint echoes back exactly what was asked for */
+function checkChainflipChannel(errs, status, exp) {   // exp: {srcChain, srcAsset, destChain, destAsset, destAddress, amount, depositAddress, id}
+  if (!status) { errs.push("no channel status"); return; }
+  if (status.srcChain !== exp.srcChain || status.srcAsset !== exp.srcAsset) errs.push(`channel source ${status.srcChain}.${status.srcAsset} != ${exp.srcChain}.${exp.srcAsset}`);
+  if (status.destChain !== exp.destChain || status.destAsset !== exp.destAsset) errs.push(`channel destination ${status.destChain}.${status.destAsset} != ${exp.destChain}.${exp.destAsset}`);
+  if (!sameAddr(status.destAddress, exp.destAddress)) errs.push(`channel pays to ${status.destAddress}, not ${exp.destAddress}`);
+  const dc = status.depositChannel || {};
+  if (dc.id !== exp.id) errs.push(`channel id ${dc.id} != ${exp.id}`);
+  if (!sameAddr(dc.depositAddress, exp.depositAddress)) errs.push(`deposit address ${dc.depositAddress} != ${exp.depositAddress}`);
+  if (String(dc.expectedDepositAmount) !== String(exp.amount)) errs.push(`expected deposit ${dc.expectedDepositAmount} != ${exp.amount}`);
+  if (dc.isExpired) errs.push("channel already expired");
+  if (dc.openedThroughBackend !== true) errs.push("channel provenance is not Chainflip's backend");
+  const fk = status.fillOrKillParams;
+  if (!fk) errs.push("channel has no fill-or-kill parameters: no price floor, no refund");
+  else {
+    if (!sameAddr(fk.refundAddress, exp.refundAddress)) errs.push(`refund address ${fk.refundAddress} is not yours`);
+    if (Number(fk.retryDurationBlocks) !== Number(exp.retryDurationBlocks)) errs.push(`retry window ${fk.retryDurationBlocks} blocks != ${exp.retryDurationBlocks}`);
+    if (exp.minPriceX128 !== undefined) {
+      const recorded = fk.minPrice !== undefined ? fk.minPrice : null;
+      if (recorded === null) errs.push("channel records no minimum price");
+      else {
+        // compare the recorded decimal price with the X128 price that was requested, to 1e-9 relative
+        const [ip, fp = ""] = String(recorded).split("."); const rec = BigInt(ip + fp.padEnd(30, "0").slice(0, 30));
+        const req = BigInt(exp.minPriceX128) * 10n ** 30n / (1n << 128n);
+        const diff = rec > req ? rec - req : req - rec;
+        if (req === 0n || diff * 1000000000n > req) errs.push(`channel minimum price ${recorded} differs from the requested floor`);
+      }
+    }
+  }
+}
+
+/* ---------------- REST with failover for reads; broadcast is bound to one endpoint ---------------- */
+const CHAIN = {
+  "osmosis-1":   { rests: K.OSMO_REST,  feeDenom: "uosmo", feeDec: 6,  feeSym: "OSMO" },
+  "injective-1": { rests: K.INJ_REST,   feeDenom: "inj",   feeDec: 18, feeSym: "INJ",  gasPrice: K.INJ_GAS_PRICE },
+  "noble-1":     { rests: K.NOBLE_REST, feeDenom: "uusdc", feeDec: 6,  feeSym: "USDC", gasPrice: K.NOBLE_GAS_PRICE },
+};
+const PROVEN = {};
+async function jget(url, opts) {
+  const r = await fetch(url, opts); const t = await r.text();
+  let j; try { j = JSON.parse(t); } catch { throw new Error(`${r.status} from ${url}: ${t.slice(0, 120)}`); }
+  if (!r.ok) throw new Error(j.message || j.error || `${r.status} from ${url}`);
+  return j;
+}
+async function proveEndpoints(chainId) {
+  if (PROVEN[chainId]) return PROVEN[chainId];
+  const rests = CHAIN[chainId].rests, ok = [];
+  await Promise.all(rests.map(async ep => {
+    try { const j = await jget(ep + "/cosmos/base/tendermint/v1beta1/node_info"); if (j.default_node_info?.network === chainId) ok.push(ep); }
+    catch (e) { log(`endpoint ${ep} skipped: ${e.message}`); }
+  }));
+  if (!ok.length) throw new Error(`no REST endpoint proved chain id ${chainId}`);
+  PROVEN[chainId] = rests.filter(e => ok.includes(e));
+  return PROVEN[chainId];
+}
+async function lcdGet(chainId, path) {
+  const eps = await proveEndpoints(chainId); let last;
+  for (const ep of eps) { try { return await jget(ep + path); } catch (e) { last = e; } }
+  throw last;
+}
+async function lcdPost(ep, path, body) { return jget(ep + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); }
+async function bankBalance(chainId, addr, denom) {
+  const j = await lcdGet(chainId, `/cosmos/bank/v1beta1/balances/${addr}/by_denom?denom=${encodeURIComponent(denom)}`);
+  return BigInt(j.balance?.amount || "0");
+}
+async function getAccount(chainId, addr) {
+  const j = await lcdGet(chainId, `/cosmos/auth/v1beta1/accounts/${addr}`);
+  if (!j.account) throw new Error(`account ${addr} not found on ${chainId} (never funded?)`);
+  let a = j.account; for (let i = 0; i < 4 && a.base_account; i++) a = a.base_account;
+  if (a.account_number === undefined) throw new Error("unrecognised account shape");
+  return { accountNumber: a.account_number, sequence: a.sequence ?? "0" };
+}
+async function smartQuery(contract, q) {
+  const j = await lcdGet("osmosis-1", `/cosmwasm/wasm/v1/contract/${contract}/smart/${btoa(JSON.stringify(q))}`);
+  return j.data;
+}
+/* the channel constants are pinned, but the chain is authoritative: open, and its light client names the expected chain */
+async function assertChannel(chainId, channel, expectChain) {
+  const ch = await lcdGet(chainId, `/ibc/core/channel/v1/channels/${channel}/ports/transfer`);
+  if (ch.channel?.state !== "STATE_OPEN") throw new Error(`${chainId} ${channel} is ${ch.channel?.state}`);
+  const cs = await lcdGet(chainId, `/ibc/core/channel/v1/channels/${channel}/ports/transfer/client_state`);
+  const got = cs.identified_client_state?.client_state?.chain_id;
+  if (got !== expectChain) throw new Error(`${chainId} ${channel} reaches ${got}, not ${expectChain}`);
+}
+/* EVM reads go to public RPC so refreshing balances never asks the wallet to hop chains; only sending uses the wallet */
+async function rpc(chainId, method, params) {
+  let last;
+  for (const url of K.EVM[chainId].rpc) {
+    try { const j = await jget(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) }); if (j.error) throw new Error(j.error.message); return j.result; }
+    catch (e) { last = e; }
+  }
+  throw last;
+}
+async function erc20BalanceOf(chainId, token, owner) { return BigInt(await rpc(chainId, "eth_call", [{ to: token, data: "0x70a08231" + pad32(owner) }, "latest"])); }
+async function erc20Allowance(chainId, token, owner, spender) { return BigInt(await rpc(chainId, "eth_call", [{ to: token, data: "0xdd62ed3e" + pad32(owner) + pad32(spender) }, "latest"])); }
+async function evmNative(chainId, owner) { return BigInt(await rpc(chainId, "eth_getBalance", [owner, "latest"])); }
+async function waitReceipt(chainId, hash, maxMs = 10 * 60 * 1000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < maxMs) { const r = await rpc(chainId, "eth_getTransactionReceipt", [hash]); if (r) { if (r.status !== "0x1") throw new Error(`tx ${hash} reverted`); return r; } await sleep(4000); }
+  throw new Error(`no receipt for ${hash} after 10 minutes`);
+}
+
+/* ---------------- Nomic relayers, Chainflip, Bitcoin ---------------- */
+async function nomicSigsetConsensus() {
+  const sets = await Promise.all(K.NOMIC_RELAYERS.map(async r => { try { return await jget(r + "/sigset"); } catch (e) { throw new Error(`Nomic relayer ${r}: ${e.message}`); } }));
+  for (const x of sets.slice(1)) if (!sameSigset(sets[0], x)) throw new Error("Nomic relayers disagree on the signatory set; not deriving an address");
+  if (!sets[0].depositsEnabled) throw new Error("Nomic deposits are disabled right now (capacity limit)");
+  return sets[0];
+}
+async function nomicBroadcastAddress(address, sigsetIndex, broadcastBytes) {
+  const results = await Promise.all(K.NOMIC_RELAYERS.map(async r => {
+    const res = await fetch(`${r}/address?deposit_addr=${address}&sigset_index=${sigsetIndex}`, { method: "POST", body: broadcastBytes });
+    if (!res.ok) throw new Error(`Nomic relayer ${r} refused the address: ${(await res.text()).slice(0, 120)}`);
+    return true;
+  }));
+  return results.length;
+}
+async function chainflipQuote(src, dst, amount) {
+  const qs = await jget(`${K.CHAINFLIP}/v2/quote?srcChain=${src.chain}&srcAsset=${src.asset}&destChain=${dst.chain}&destAsset=${dst.asset}&amount=${amount}`);
+  const q = (Array.isArray(qs) ? qs : [qs]).find(x => x.type === "REGULAR"); if (!q) throw new Error("Chainflip returned no regular quote");
+  return q;
+}
+async function chainflipOpenChannel(src, dst, amount, destAddress, refundAddress, q, srcDec, dstDec) {
+  const tol = Number(q.recommendedSlippageTolerancePercent || 2.5), minPriceX128 = chainflipMinPriceX128(q.estimatedPrice, tol, srcDec, dstDec);
+  const body = { srcAsset: src, destAsset: dst, destAddress, amount: String(amount),
+    fillOrKillParams: { retryDurationBlocks: K.CHAINFLIP_RETRY_BLOCKS, refundAddress, minPriceX128 },
+    quote: Object.fromEntries(["intermediateAmount", "egressAmount", "estimatedPrice", "recommendedSlippageTolerancePercent", "recommendedLivePriceSlippageTolerancePercent"].filter(k => q[k] !== undefined).map(k => [k, q[k]])),
+    takeCommission: true };
+  const ch = await jget(`${K.CHAINFLIP}/api/openSwapDepositChannel`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const status = await jget(`${K.CHAINFLIP}/v2/swaps/${ch.id}`);
+  const errs = []; checkChainflipChannel(errs, status, { srcChain: src.chain, srcAsset: src.asset, destChain: dst.chain, destAsset: dst.asset, destAddress, amount: String(amount), depositAddress: ch.depositAddress, id: ch.id, refundAddress, retryDurationBlocks: K.CHAINFLIP_RETRY_BLOCKS, minPriceX128 });
+  if (errs.length) throw new Error("Chainflip channel refused:\n• " + errs.join("\n• "));
+  return { ...ch, status };
+}
+async function chainflipWait(id, onState, maxMs = 3 * 60 * 60 * 1000) {
+  const t0 = Date.now(); let last = "";
+  while (Date.now() - t0 < maxMs) {
+    let s; try { s = await jget(`${K.CHAINFLIP}/v2/swaps/${id}`); } catch (e) { onState("Chainflip status unavailable: " + e.message); await sleep(15000); continue; }
+    if (s.state !== last) { onState("Chainflip: " + s.state); last = s.state; }
+    if (s.state === "COMPLETED") return s;
+    if (s.state === "FAILED") throw new Error("Chainflip swap failed: " + JSON.stringify(s.swapEgress?.failure || s.refundEgress || s.state));
+    await sleep(15000);
+  }
+  throw new Error("Chainflip swap did not complete in time");
+}
+/* confirmed BTC balance of an address, in sats, via mempool.space */
+async function btcBalance(addr) { const j = await jget(`${K.MEMPOOL}/address/${addr}`); return BigInt(j.chain_stats.funded_txo_sum) - BigInt(j.chain_stats.spent_txo_sum); }
+const btcKeplr = () => { if (!window.bitcoin_keplr) throw new Error("Keplr's Bitcoin provider (window.bitcoin_keplr) is missing; update Keplr and enable Bitcoin"); return window.bitcoin_keplr; };
+async function connectBitcoin() {
+  const accs = await btcKeplr().connectWallet(); W.btc = accs[0];
+  const net = await btcKeplr().getNetwork(); if (net !== "livenet") throw new Error(`Keplr Bitcoin is on ${net}, not livenet`);
+  return W.btc;
+}
+
+/* ---------------- Skip ---------------- */
+async function skipPost(path, body) { return jget(K.SKIP + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); }
+const SKIP_OPTS = { allow_multi_tx: false, allow_unsafe: false, smart_relay: true, go_fast: false, experimental_features: ["cctp", "axelar"], slippage_tolerance_percent: "0.05" };
+async function skipRoute(src, srcChain, dst, dstChain, amount, addrs, extra = {}) {
+  return skipPost("/v2/fungible/msgs_direct", { ...SKIP_OPTS, ...extra, source_asset_denom: src, source_asset_chain_id: srcChain,
+    dest_asset_denom: dst, dest_asset_chain_id: dstChain, amount_in: amount, chain_ids_to_addresses: addrs });
+}
+async function skipTrack(chainId, hash) {
+  for (let i = 0; i < 6; i++) { try { return await skipPost("/v2/tx/track", { chain_id: chainId, tx_hash: hash }); } catch (e) { log("track retry:", e.message); await sleep(5000); } }
+  throw new Error("Skip would not accept the tx for tracking");
+}
+async function skipStatus(chainId, hash) { return jget(`${K.SKIP}/v2/tx/status?chain_id=${chainId}&tx_hash=${hash}`); }
+const TERMINAL = new Set(["STATE_COMPLETED", "STATE_COMPLETED_SUCCESS", "STATE_COMPLETED_ERROR", "STATE_ABANDONED"]);
+async function waitSkip(chainId, hash, onState, maxMs = 45 * 60 * 1000) {
+  const t0 = Date.now(); let last = "";
+  while (Date.now() - t0 < maxMs) {
+    let s; try { s = await skipStatus(chainId, hash); } catch (e) { onState("status unavailable: " + e.message); await sleep(6000); continue; }
+    const line = s.state + (s.next_blocking_transfer ? ` (blocking transfer #${s.next_blocking_transfer.transfer_sequence_index})` : "");
+    if (line !== last) { onState(line); last = line; }
+    if (TERMINAL.has(s.state)) return s;
+    await sleep(6000);
+  }
+  throw new Error("Skip status did not reach a terminal state in time");
+}
+async function trackToCompletion(chainId, hash, onState) {
+  await skipTrack(chainId, hash);
+  const st = await waitSkip(chainId, hash, onState);
+  if (st.state !== "STATE_COMPLETED_SUCCESS" && st.state !== "STATE_COMPLETED") throw new Error(`Skip reports ${st.state}: ${JSON.stringify(st.error || st.transfer_asset_release || "")}`);
+}
+
+/* ============================================================================
+   Route validation. Pure functions over the Skip response; unit-tested against
+   saved good and bad responses. Every check that fails is listed; nothing is
+   auto-corrected.
+   ============================================================================ */
+const opKind = op => Object.keys(op)[0];
+function swapOps(op) {
+  const si = op.swap?.swap_in || op.swap?.smart_swap_in || {};
+  const ops = si.swap_operations || (si.swap_routes || []).flatMap(r => r.swap_operations || []);
+  return { venue: si.swap_venue?.name, ops };
+}
+function checkCommon(errs, res, exp) {
+  const r = res?.route;
+  if (!r) { errs.push("no route in response"); return; }
+  if (!sameAddr(r.source_asset_denom, exp.src) || (!exp.src.startsWith("0x") && r.source_asset_denom !== exp.src)) errs.push(`source denom ${r.source_asset_denom} != ${exp.src}`);
+  if (r.source_asset_chain_id !== exp.srcChain) errs.push(`source chain ${r.source_asset_chain_id} != ${exp.srcChain}`);
+  if (!sameAddr(r.dest_asset_denom, exp.dst) || (!exp.dst.startsWith("0x") && r.dest_asset_denom !== exp.dst)) errs.push(`dest denom ${r.dest_asset_denom} != ${exp.dst}`);
+  if (r.dest_asset_chain_id !== exp.dstChain) errs.push(`dest chain ${r.dest_asset_chain_id} != ${exp.dstChain}`);
+  if (String(r.amount_in) !== String(exp.amountIn)) errs.push(`amount_in ${r.amount_in} != ${exp.amountIn}`);
+  if (r.txs_required !== 1 || !Array.isArray(res.txs) || res.txs.length !== 1) errs.push(`expected exactly 1 tx, got ${r.txs_required}/${res.txs?.length}`);
+  if (exp.chains && JSON.stringify(r.chain_ids) !== JSON.stringify(exp.chains)) errs.push(`chain path ${JSON.stringify(r.chain_ids)} != ${JSON.stringify(exp.chains)}`);
+  const kinds = (r.operations || []).map(opKind);
+  if (exp.ops && JSON.stringify(kinds) !== JSON.stringify(exp.ops)) errs.push(`operations ${JSON.stringify(kinds)} != ${JSON.stringify(exp.ops)}`);
+  if (exp.checkLoss !== false && !withinLoss(exp.amountIn, r.amount_out || "0", exp.flatLoss || 0n)) errs.push(`amount_out ${r.amount_out} loses more than ${K.MAX_LOSS_BPS} bps${exp.flatLoss ? ` and more than ${exp.flatLoss} flat` : ""}`);
+  for (const f of r.estimated_fees || []) if (!(exp.bridges || ["CCTP", "CCTP_V2"]).includes(f.bridge_id)) errs.push(`unexpected fee from bridge ${f.bridge_id}`);
+}
+function checkSwap(errs, label, venue, ops, denomIn, denomOut, pool = K.POOL) {
+  if (venue !== "osmosis-poolmanager") errs.push(`${label}: swap venue ${venue}`);
+  if (!Array.isArray(ops) || ops.length !== 1) { errs.push(`${label}: expected exactly one swap hop, got ${ops?.length}`); return; }
+  const o = ops[0];
+  if (String(o.pool) !== String(pool)) errs.push(`${label}: pool ${o.pool} != ${pool}`);
+  if (o.denom_in !== denomIn) errs.push(`${label}: denom_in ${o.denom_in}`);
+  if (o.denom_out !== denomOut) errs.push(`${label}: denom_out ${o.denom_out}`);
+}
+function checkSwapAndAction(errs, sa, denomIn, denomOut, amountIn, pool = K.POOL) {
+  if (!sa) { errs.push("no swap_and_action"); return; }
+  if (Array.isArray(sa.affiliates) && sa.affiliates.length) errs.push("affiliates present: " + JSON.stringify(sa.affiliates));
+  const us = sa.user_swap?.swap_exact_asset_in;
+  if (!us) errs.push("user_swap is not swap_exact_asset_in");
+  else checkSwap(errs, "contract msg", us.swap_venue_name, us.operations, denomIn, denomOut, pool);
+  const ma = sa.min_asset?.native;
+  if (!ma || ma.denom !== denomOut) errs.push(`min_asset denom ${ma?.denom} != ${denomOut}`);
+  else if (BigInt(ma.amount) * 1000n < BigInt(amountIn) * 999n) errs.push(`min_asset ${ma.amount} is below 99.9% of ${amountIn}`);
+  if (sa.timeout_timestamp && BigInt(sa.timeout_timestamp) <= BigInt(Date.now()) * 1000000n) errs.push("contract timeout already passed");
+}
+function parseJsonField(v, label, errs) {
+  if (v && typeof v === "object") return v;
+  try { return JSON.parse(v); } catch { errs.push(`${label} is not JSON`); return null; }
+}
+function transferOp(errs, op, from, to) {
+  const t = op?.transfer;
+  if (!t) errs.push(`expected IBC transfer ${from} -> ${to}`);
+  else if (!(t.from_chain_id === from && t.to_chain_id === to && t.bridge_id === "IBC")) errs.push(`hop is not IBC ${from} -> ${to}`);
+}
+/* ABI helpers: 4-byte selector plus 32-byte words; dynamic fields are read from their offsets, never searched for */
+function abiWords(dataHex) {
+  const d = String(dataHex || "").replace(/^0x/i, "").toLowerCase();
+  if (d.length < 8 || !/^[0-9a-f]+$/.test(d)) return null;
+  const body = d.slice(8), w = []; for (let i = 0; i + 64 <= body.length; i += 64) w.push(body.slice(i, i + 64));
+  return { sel: d.slice(0, 8), w, body };
+}
+function abiDyn(body, offset) {   // offset in bytes from the start of the argument block
+  const o = Number(offset) * 2; if (!Number.isFinite(o) || o + 64 > body.length) return null;
+  const n = Number(BigInt("0x" + body.slice(o, o + 64))); if (o + 64 + n * 2 > body.length) return null;
+  return hexToBytes(body.slice(o + 64, o + 64 + n * 2));
+}
+const abiStr = (body, offset) => { const b = abiDyn(body, offset); return b === null ? null : new TextDecoder().decode(b); };
+const wordEq = (w, hexOrInt) => typeof hexOrInt === "string" && hexOrInt.startsWith("0x") ? w === pad32(hexOrInt) : BigInt("0x" + w) === BigInt(hexOrInt);
+/* an EVM tx from Skip: pinned target, exact approval, controlled native value, and every argument of the pinned
+   function decoded and compared. `exp.kind` selects the adapter's ABI. Returns decoded dynamic fields for the caller. */
+function checkEvmTx(errs, tx, exp) {   // exp: {chain, signer, to, token, amountIn, value, kind, ...kind-specific}
+  const out = {};
+  if (!tx) { errs.push("tx[0] is not an EVM tx"); return out; }
+  if (String(tx.chain_id) !== exp.chain) errs.push(`tx chain ${tx.chain_id} != ${exp.chain}`);
+  if (!sameAddr(tx.signer_address, exp.signer)) errs.push(`signer ${tx.signer_address} is not your address on that chain`);
+  if (!sameAddr(tx.to, exp.to)) errs.push(`target ${tx.to} is not the pinned adapter ${exp.to}`);
+  if (String(tx.value || "0") !== String(exp.value ?? "0")) errs.push(`tx native value ${tx.value} != expected ${exp.value ?? "0"}`);
+  const ap = tx.required_erc20_approvals;
+  if (!Array.isArray(ap)) errs.push("no approvals field");
+  else {
+    if (ap.length > 1) errs.push(`${ap.length} approvals requested`);
+    for (const a of ap) {
+      if (!sameAddr(a.token_contract, exp.token)) errs.push(`approval for token ${a.token_contract}`);
+      if (!sameAddr(a.spender, tx.to)) errs.push(`approval spender ${a.spender} is not the tx target`);
+      if (String(a.amount) !== String(exp.amountIn)) errs.push(`approval amount ${a.amount} != ${exp.amountIn}`);
+    }
+  }
+  const abi = abiWords(tx.data);
+  if (!abi) { errs.push("calldata missing or not hex"); return out; }
+  const { sel, w, body } = abi;
+  const want = (i, v, label) => { if (w[i] === undefined || !wordEq(w[i], v)) errs.push(`calldata ${label} (word ${i}) is ${w[i] === undefined ? "missing" : "0x" + w[i].replace(/^0+/, "")}, expected ${v}`); };
+  if (exp.kind === "cctp_v2") {
+    if (sel !== K.CCTP_V2_SELECTOR) errs.push(`selector ${sel} is not the CCTP v2 adapter's ${K.CCTP_V2_SELECTOR}`);
+    if (w.length !== 10) errs.push(`CCTP v2 call has ${w.length} words, expected 10`);
+    want(0, exp.netAmount, "amount"); want(1, exp.domain, "destination domain"); want(2, exp.recipientHex, "mint recipient"); want(3, exp.token, "burn token");
+    want(4, exp.fee, "max fee"); want(5, 0, "destination caller"); if (w[6] !== undefined && !["1000", "2000"].includes(BigInt("0x" + w[6]).toString())) errs.push(`finality threshold ${BigInt("0x" + w[6])}`);
+    want(7, exp.relayer || K.CCTP_V2_RELAYER, "fee relayer"); want(8, 0x120, "hook data offset"); want(9, 0, "hook data length");
+  } else if (exp.kind === "cctp_v1") {
+    if (sel !== K.CCTP_V1_SELECTOR) errs.push(`selector ${sel} is not the CCTP v1 adapter's ${K.CCTP_V1_SELECTOR}`);
+    if (w.length !== 6) errs.push(`CCTP v1 call has ${w.length} words, expected 6`);
+    want(0, exp.netAmount, "amount"); want(1, exp.domain, "destination domain"); want(2, exp.recipientHex, "mint recipient"); want(3, exp.token, "burn token");
+    want(4, exp.fee, "fee"); want(5, K.CCTP_V1_FEE_RECIPIENT, "fee recipient");
+  } else if (exp.kind === "axelar") {
+    if (sel !== K.AXELAR_SELECTOR) errs.push(`selector ${sel} is not the Axelar receiver's ${K.AXELAR_SELECTOR}`);
+    want(4, exp.amountIn, "amount"); want(5, exp.value ?? "0", "gas fee");
+    const chain = abiStr(body, w[0] ? BigInt("0x" + w[0]) : -1), dest = abiStr(body, w[1] ? BigInt("0x" + w[1]) : -1), payload = abiDyn(body, w[2] ? BigInt("0x" + w[2]) : -1), symbol = abiStr(body, w[3] ? BigInt("0x" + w[3]) : -1);
+    if (chain !== "osmosis") errs.push(`Axelar destination chain ${JSON.stringify(chain)}`);
+    if (dest !== exp.receiver) errs.push(`Axelar destination address ${dest} != ${exp.receiver}`);
+    if (!exp.axelarSymbol) errs.push("no Axelar symbol pinned for this call"); else if (symbol !== exp.axelarSymbol) errs.push(`Axelar symbol ${symbol} != ${exp.axelarSymbol}`);
+    if (!payload) errs.push("Axelar payload missing"); else out.payload = payload;
+  } else if (exp.kind === "eureka") {
+    if (sel !== K.EUREKA_SELECTOR) errs.push(`selector ${sel} is not the Eureka contract's ${K.EUREKA_SELECTOR}`);
+    want(0, exp.netAmount, "amount"); want(2, exp.fee, "Eureka fee"); want(3, K.EUREKA_FEE_RECIPIENT, "fee recipient"); want(5, exp.token, "token");
+    if (w[4] !== undefined && BigInt("0x" + w[4]) <= BigInt(Math.floor(Date.now() / 1000))) errs.push("Eureka timeout already passed");
+    const st = w[1] !== undefined ? Number(BigInt("0x" + w[1])) : NaN, sbody = Number.isFinite(st) ? body.slice(st * 2) : "";
+    const sw = i => sbody.slice(i * 64, (i + 1) * 64);
+    if (!Number.isFinite(st) || sbody.length < 6 * 64) errs.push("Eureka struct missing");
+    else {
+      if (!wordEq(sw(0), exp.token)) errs.push("Eureka struct token mismatch");
+      const receiver = abiStr(sbody, BigInt("0x" + sw(1))), client = abiStr(sbody, BigInt("0x" + sw(2))), port = abiStr(sbody, BigInt("0x" + sw(3))), memo = abiStr(sbody, BigInt("0x" + sw(5)));
+      if (receiver !== exp.receiver) errs.push(`Eureka receiver ${receiver} != ${exp.receiver}`);
+      if (client !== K.EUREKA_ETH_CLIENT) errs.push(`Eureka client ${client} != ${K.EUREKA_ETH_CLIENT}`);
+      if (port !== "transfer") errs.push(`Eureka port ${port}`);
+      if (sw(4) && BigInt("0x" + sw(4)) <= BigInt(Math.floor(Date.now() / 1000))) errs.push("Eureka struct timeout already passed");
+      if (memo === null) errs.push("Eureka memo missing"); else out.memoText = memo;
+    }
+  } else errs.push(`unknown EVM call kind ${exp.kind}`);
+  return out;
+}
+/* The Osmosis instructions inside an Axelar GMP payload: exactly a 4-byte 0x00000002 envelope followed by UTF-8 JSON
+   that consumes the whole remainder, whose single top-level key is swap_and_action_with_recover. Anything else is refused. */
+function decodeAxelarPayload(bytes, errs) {
+  if (!(bytes instanceof Uint8Array) || bytes.length < 6) { errs.push("Axelar payload missing or too short"); return null; }
+  if (!(bytes[0] === 0 && bytes[1] === 0 && bytes[2] === 0 && bytes[3] === 2)) { errs.push(`Axelar payload envelope 0x${Array.from(bytes.slice(0, 4)).map(b => b.toString(16).padStart(2, "0")).join("")} is not 0x00000002`); return null; }
+  let text; try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.slice(4)); } catch { errs.push("Axelar payload is not valid UTF-8"); return null; }
+  let j; try { j = JSON.parse(text); } catch { errs.push("Axelar payload is not a single JSON document"); return null; }   // JSON.parse rejects trailing data
+  const keys = j && typeof j === "object" && !Array.isArray(j) ? Object.keys(j) : [];
+  if (keys.length !== 1 || keys[0] !== "swap_and_action_with_recover") { errs.push(`Axelar payload top-level is ${JSON.stringify(keys)}, expected swap_and_action_with_recover`); return null; }
+  return j.swap_and_action_with_recover;
+}
+/* a Noble/Injective -> Osmosis MsgTransfer whose ibc-hooks memo swaps into allUSDC on pool 3497 */
+function checkHookTransfer(errs, m, exp) {   // exp: {channel, denom, amountIn, sender, osmo, swapIn}
+  if (m.source_port !== "transfer") errs.push(`port ${m.source_port}`);
+  if (m.source_channel !== exp.channel) errs.push(`channel ${m.source_channel} != ${exp.channel}`);
+  if (!(m.token?.denom === exp.denom && String(m.token?.amount) === String(exp.amountIn))) errs.push(`token ${JSON.stringify(m.token)} != ${exp.amountIn} ${exp.denom}`);
+  if (m.sender !== exp.sender) errs.push(`sender ${m.sender} is not you`);
+  if (m.receiver !== K.ENTRY_POINT) errs.push(`receiver ${m.receiver} is not the pinned Skip entry point`);
+  if (m.timeout_timestamp && BigInt(m.timeout_timestamp) <= BigInt(Date.now()) * 1000000n) errs.push("IBC timeout already passed");
+  const memo = parseJsonField(m.memo, "memo", errs);
+  const w = memo?.wasm;
+  if (!w) { errs.push("memo has no wasm hook"); return; }
+  if (w.contract !== K.ENTRY_POINT) errs.push(`hook contract ${w.contract} is not the pinned entry point`);
+  const sa = w.msg?.swap_and_action; checkSwapAndAction(errs, sa, exp.swapIn, K.ALL, exp.amountIn);
+  const to = sa?.post_swap_action?.transfer?.to_address;
+  if (to !== exp.osmo) errs.push(`final recipient ${to} is not your Osmosis address`);
+}
+function singleCosmosMsg(errs, res, chainId, signer, typeUrl) {
+  const tx = res?.txs?.[0]?.cosmos_tx;
+  if (!tx) { errs.push("tx[0] is not a cosmos tx"); return null; }
+  if (tx.chain_id !== chainId) errs.push(`tx chain ${tx.chain_id} != ${chainId}`);
+  if (tx.signer_address !== signer) errs.push(`signer ${tx.signer_address} is not your ${chainId} address`);
+  if (!Array.isArray(tx.msgs) || tx.msgs.length !== 1) { errs.push(`expected 1 msg, got ${tx.msgs?.length}`); return null; }
+  if (tx.msgs[0].msg_type_url !== typeUrl) { errs.push(`msg type ${tx.msgs[0].msg_type_url}`); return null; }
+  return parseJsonField(tx.msgs[0].msg, "msg", errs);
+}
+/* an Axelar GMP memo (Osmosis -> Axelar -> Ethereum): pinned target contract, your address closing the payload, bounded fee */
+function checkAxelarMemo(errs, memo, exp) {   // exp: {chain, receiver, recipientHex, maxFee?}
+  if (!memo) { errs.push("no Axelar memo"); return; }
+  if (memo.destination_chain !== exp.chain) errs.push(`Axelar destination ${memo.destination_chain} != ${exp.chain}`);
+  if (exp.receiver && !sameAddr(memo.destination_address, exp.receiver)) errs.push(`Axelar destination_address ${memo.destination_address} is not the pinned receiver ${exp.receiver}`);
+  const payload = Array.isArray(memo.payload) ? memo.payload.map(b => Number(b).toString(16).padStart(2, "0")).join("") : "";
+  if (!payload.endsWith(pad32(exp.recipientHex))) errs.push("Axelar payload does not end with your EVM address");
+  if (exp.maxFee !== undefined && BigInt(memo.fee?.amount || "0") > exp.maxFee) errs.push(`Axelar fee ${memo.fee?.amount} exceeds ${exp.maxFee}`);
+}
+
+/* Noble's orbiter memo: CCTP forwarding to the right domain, minting to you, bounded fee */
+function checkOrbiterMemo(errs, memo, H, evm) {
+  const fw = memo?.orbiter?.forwarding;
+  if (!fw) { errs.push("memo has no orbiter.forwarding"); return; }
+  if (fw.protocol_id !== "PROTOCOL_CCTP") errs.push(`forwarding protocol ${fw.protocol_id}`);
+  if (fw.attributes?.destination_domain !== H.cctpDomain) errs.push(`CCTP destination domain ${fw.attributes?.destination_domain} != ${H.cctpDomain} (${H.name})`);
+  if (fw.passthrough_payload) errs.push("unexpected passthrough_payload");
+  try {
+    const mr = unb64(fw.attributes.mint_recipient);
+    const hex = Array.from(mr).map(b => b.toString(16).padStart(2, "0")).join("");
+    if (mr.length !== 32 || hex !== pad32(evm)) errs.push(`CCTP mint_recipient 0x${hex.slice(24)} is not your EVM address`);
+  } catch { errs.push("mint_recipient is not base64"); }
+  let fees = 0n;
+  for (const pa of memo?.orbiter?.pre_actions || []) {
+    if (pa.id !== "ACTION_FEE") { errs.push(`unexpected orbiter pre_action ${pa.id}`); continue; }
+    for (const f of pa.attributes?.fees_info || []) fees += BigInt(f.amount?.value || "0");
+  }
+  if (fees > H.maxOrbiterFee) errs.push(`orbiter fee ${fees} uusdc exceeds ${H.maxOrbiterFee} for ${H.name}`);
+}
+/* USDC.noble (Osmosis) -> USDC on a hub: IBC to Noble's orbiter, CCTP v1 onward. The transmuter exit is NOT part of this
+   request: asked to exit allUSDC itself, Skip routes small amounts through allBTC (pools 3504 and 1943) for a 0.04% edge,
+   which leaves the pool's Noble balance untouched. The page swaps on 3497 itself and prepends that message. */
+function validateNobleToHub(res, ctx) {   // ctx: {osmo, evm, amountIn, hub}
+  const errs = [], H = K.HUB[ctx.hub];
+  checkCommon(errs, res, { src: K.NOBLE, srcChain: "osmosis-1", dst: H.usdc, dstChain: ctx.hub, amountIn: ctx.amountIn,
+                           chains: ["osmosis-1", "noble-1", ctx.hub], ops: ["transfer", "cctp_transfer"], flatLoss: H.flatLoss });
+  const ops = res?.route?.operations || [];
+  transferOp(errs, ops[0], "osmosis-1", "noble-1");
+  if (ops[1]?.cctp_transfer && !(ops[1].cctp_transfer.from_chain_id === "noble-1" && ops[1].cctp_transfer.to_chain_id === ctx.hub && ops[1].cctp_transfer.bridge_id === "CCTP")) errs.push(`hop 2 is not CCTP noble-1 -> ${H.name}`);
+  const m = singleCosmosMsg(errs, res, "osmosis-1", ctx.osmo, "/ibc.applications.transfer.v1.MsgTransfer");
+  if (!m) return { ok: false, errs };
+  if (m.source_port !== "transfer") errs.push(`port ${m.source_port}`);
+  if (m.source_channel !== K.OSMO_TO_NOBLE) errs.push(`channel ${m.source_channel} != ${K.OSMO_TO_NOBLE}`);
+  if (!(m.token?.denom === K.NOBLE && String(m.token?.amount) === String(ctx.amountIn))) errs.push(`token ${JSON.stringify(m.token)} != ${ctx.amountIn} USDC.noble`);
+  if (m.sender !== ctx.osmo) errs.push(`sender ${m.sender} is not you`);
+  if (m.receiver !== K.NOBLE_ORBITER) errs.push(`receiver ${m.receiver} is not the pinned Noble orbiter module`);
+  if (m.timeout_timestamp && BigInt(m.timeout_timestamp) <= BigInt(Date.now()) * 1000000n) errs.push("IBC timeout already passed");
+  checkOrbiterMemo(errs, parseJsonField(m.memo, "orbiter memo", errs), H, ctx.evm);
+  return { ok: !errs.length, errs, amountOut: res?.route?.amount_out, secs: res?.route?.estimated_route_duration_seconds };
+}
+/* allUSDC (Osmosis) -> USDC on a hub with Skip choosing the swap path. Everything after the swap is checked as strictly as
+   the pinned leg (orbiter, domain, your address, fees); only the pools are free. Reports whether pool 3497 was used to take
+   USDC.noble out, because a path that avoids it leaves the alloy's Noble balance untouched. */
+function validateFreeExitToHub(res, ctx) {   // ctx: {osmo, evm, amountIn, hub}
+  const errs = [], H = K.HUB[ctx.hub];
+  checkCommon(errs, res, { src: K.ALL, srcChain: "osmosis-1", dst: H.usdc, dstChain: ctx.hub, amountIn: ctx.amountIn,
+                           chains: ["osmosis-1", "noble-1", ctx.hub], ops: ["swap", "transfer", "cctp_transfer"], flatLoss: H.flatLoss });
+  const ops = res?.route?.operations || [];
+  const sw = ops[0]?.swap ? swapOps(ops[0]) : { venue: null, ops: [] };
+  if (sw.venue !== "osmosis-poolmanager") errs.push(`swap venue ${sw.venue}`);
+  if (!sw.ops.length) errs.push("no swap hops");
+  if (sw.ops.length && sw.ops[0].denom_in !== K.ALL) errs.push(`swap starts from ${sw.ops[0].denom_in}, not allUSDC`);
+  if (sw.ops.length && sw.ops[sw.ops.length - 1].denom_out !== K.NOBLE) errs.push(`swap ends in ${sw.ops[sw.ops.length - 1].denom_out}, not USDC.noble`);
+  transferOp(errs, ops[1], "osmosis-1", "noble-1");
+  if (ops[2]?.cctp_transfer && !(ops[2].cctp_transfer.from_chain_id === "noble-1" && ops[2].cctp_transfer.to_chain_id === ctx.hub && ops[2].cctp_transfer.bridge_id === "CCTP")) errs.push(`hop 3 is not CCTP noble-1 -> ${H.name}`);
+  const m = singleCosmosMsg(errs, res, "osmosis-1", ctx.osmo, "/cosmwasm.wasm.v1.MsgExecuteContract");
+  if (!m) return { ok: false, errs };
+  if (m.sender !== ctx.osmo) errs.push(`msg.sender ${m.sender} is not you`);
+  if (m.contract !== K.ENTRY_POINT) errs.push(`contract ${m.contract} is not the pinned Skip entry point ${K.ENTRY_POINT}`);
+  if (!(Array.isArray(m.funds) && m.funds.length === 1 && m.funds[0].denom === K.ALL && String(m.funds[0].amount) === String(ctx.amountIn))) errs.push(`funds ${JSON.stringify(m.funds)} != ${ctx.amountIn} allUSDC`);
+  const inner = parseJsonField(m.msg, "contract msg", errs); if (!inner) return { ok: false, errs };
+  const sa = inner.swap_and_action;
+  if (!sa) { errs.push("no swap_and_action"); return { ok: false, errs }; }
+  if (Array.isArray(sa.affiliates) && sa.affiliates.length) errs.push("affiliates present: " + JSON.stringify(sa.affiliates));
+  const us = sa.user_swap?.swap_exact_asset_in;
+  if (!us) errs.push("user_swap is not swap_exact_asset_in");
+  else {
+    if (us.swap_venue_name !== "osmosis-poolmanager") errs.push(`contract swap venue ${us.swap_venue_name}`);
+    const o = us.operations || [];
+    if (!o.length || o[0].denom_in !== K.ALL || o[o.length - 1].denom_out !== K.NOBLE) errs.push("contract swap path does not go allUSDC -> USDC.noble");
+  }
+  const ma = sa.min_asset?.native;
+  if (!ma || ma.denom !== K.NOBLE) errs.push(`min_asset denom ${ma?.denom} != USDC.noble`);
+  else if (!withinLoss(ctx.amountIn, ma.amount, H.flatLoss)) errs.push(`min_asset ${ma.amount} is below the loss allowance for ${ctx.amountIn}`);
+  if (sa.timeout_timestamp && BigInt(sa.timeout_timestamp) <= BigInt(Date.now()) * 1000000n) errs.push("contract timeout already passed");
+  const ii = sa.post_swap_action?.ibc_transfer?.ibc_info;
+  if (!ii) errs.push("post_swap_action is not an ibc_transfer");
+  else {
+    if (ii.source_channel !== K.OSMO_TO_NOBLE) errs.push(`IBC channel ${ii.source_channel} != ${K.OSMO_TO_NOBLE}`);
+    if (ii.receiver !== K.NOBLE_ORBITER) errs.push(`Noble receiver ${ii.receiver} is not the pinned orbiter module`);
+    if (ii.recover_address !== ctx.osmo) errs.push(`recover_address ${ii.recover_address} is not you`);
+    checkOrbiterMemo(errs, parseJsonField(ii.memo, "orbiter memo", errs), H, ctx.evm);
+  }
+  const pools = sw.ops.map(x => String(x.pool));
+  const removesVariant = sw.ops.some(x => String(x.pool) === K.POOL && x.denom_in === K.ALL && x.denom_out === K.NOBLE);
+  return { ok: !errs.length, errs, amountOut: res?.route?.amount_out, secs: res?.route?.estimated_route_duration_seconds, pools, removesVariant };
+}
+/* USDC on a hub -> USDC.inj on Injective EVM, CCTP v2 */
+function validateHubToInj(res, ctx) {   // ctx: {evm, injHex, amountIn, hub}
+  const errs = [], H = K.HUB[ctx.hub];
+  checkCommon(errs, res, { src: H.usdc, srcChain: ctx.hub, dst: K.INJ_EVM_USDC, dstChain: K.INJ_EVM_CHAIN, amountIn: ctx.amountIn,
+                           chains: [ctx.hub, K.INJ_EVM_CHAIN], ops: ["cctp_transfer_v2"] });
+  const op = res?.route?.operations?.[0]?.cctp_transfer_v2;
+  if (op && !(op.from_chain_id === ctx.hub && op.to_chain_id === K.INJ_EVM_CHAIN && op.bridge_id === "CCTP_V2")) errs.push(`hop is not CCTP v2 ${H.name} -> injective`);
+  const tx = res?.txs?.[0]?.evm_tx, fee = bridgeFee(res, "CCTP_V2");
+  checkEvmTx(errs, tx, { kind: "cctp_v2", chain: ctx.hub, signer: ctx.evm, to: K.CCTP_V2_ADAPTER, token: H.usdc, amountIn: ctx.amountIn, recipientHex: ctx.injHex, value: "0",
+    netAmount: res?.route?.amount_out || "0", domain: K.CCTP_DOMAIN[K.INJ_EVM_CHAIN], fee: fee?.amount || "0", relayer: op?.smart_relay_fee_quote?.relayer_address || K.CCTP_V2_RELAYER });
+  if (op?.smart_relay_fee_quote?.relayer_address && !sameAddr(op.smart_relay_fee_quote.relayer_address, K.CCTP_V2_RELAYER)) errs.push(`quote relayer ${op.smart_relay_fee_quote.relayer_address} is not the pinned CCTP v2 relayer`);
+  return { ok: !errs.length, errs, amountOut: res?.route?.amount_out, secs: res?.route?.estimated_route_duration_seconds, approvals: tx?.required_erc20_approvals || [] };
+}
+/* USDC.inj on Injective EVM -> USDC on a hub, CCTP v2 */
+function validateInjToHub(res, ctx) {   // ctx: {injHex, evm, amountIn, hub}
+  const errs = [], H = K.HUB[ctx.hub];
+  checkCommon(errs, res, { src: K.INJ_EVM_USDC, srcChain: K.INJ_EVM_CHAIN, dst: H.usdc, dstChain: ctx.hub, amountIn: ctx.amountIn,
+                           chains: [K.INJ_EVM_CHAIN, ctx.hub], ops: ["cctp_transfer_v2"] });
+  const op = res?.route?.operations?.[0]?.cctp_transfer_v2;
+  if (op && !(op.from_chain_id === K.INJ_EVM_CHAIN && op.to_chain_id === ctx.hub && op.bridge_id === "CCTP_V2")) errs.push(`hop is not CCTP v2 injective -> ${H.name}`);
+  if (op && op.cctp_mint_domain !== undefined && op.cctp_mint_domain !== H.cctpDomain) errs.push(`CCTP mint domain ${op.cctp_mint_domain} != ${H.cctpDomain} (${H.name})`);
+  const tx = res?.txs?.[0]?.evm_tx, fee = bridgeFee(res, "CCTP_V2");
+  checkEvmTx(errs, tx, { kind: "cctp_v2", chain: K.INJ_EVM_CHAIN, signer: ctx.injHex, to: K.CCTP_V2_ADAPTER, token: K.INJ_EVM_USDC, amountIn: ctx.amountIn, recipientHex: ctx.evm, value: "0",
+    netAmount: res?.route?.amount_out || "0", domain: H.cctpDomain, fee: fee?.amount || "0", relayer: op?.smart_relay_fee_quote?.relayer_address || K.CCTP_V2_RELAYER });
+  if (op?.smart_relay_fee_quote?.relayer_address && !sameAddr(op.smart_relay_fee_quote.relayer_address, K.CCTP_V2_RELAYER)) errs.push(`quote relayer ${op.smart_relay_fee_quote.relayer_address} is not the pinned CCTP v2 relayer`);
+  return { ok: !errs.length, errs, amountOut: res?.route?.amount_out, secs: res?.route?.estimated_route_duration_seconds, approvals: tx?.required_erc20_approvals || [] };
+}
+/* USDC on a hub -> uusdc on Noble (your account), CCTP v1 */
+function validateHubToNoble(res, ctx) {   // ctx: {evm, nobleHex, amountIn, hub}
+  const errs = [], H = K.HUB[ctx.hub];
+  checkCommon(errs, res, { src: H.usdc, srcChain: ctx.hub, dst: "uusdc", dstChain: "noble-1", amountIn: ctx.amountIn,
+                           chains: [ctx.hub, "noble-1"], ops: ["cctp_transfer"] });
+  const op = res?.route?.operations?.[0]?.cctp_transfer;
+  if (op && !(op.from_chain_id === ctx.hub && op.to_chain_id === "noble-1" && op.bridge_id === "CCTP")) errs.push(`hop is not CCTP ${H.name} -> noble`);
+  const tx = res?.txs?.[0]?.evm_tx, fee = bridgeFee(res, "CCTP");
+  checkEvmTx(errs, tx, { kind: "cctp_v1", chain: ctx.hub, signer: ctx.evm, to: H.cctpV1Adapter, token: H.usdc, amountIn: ctx.amountIn, recipientHex: ctx.nobleHex, value: "0",
+    netAmount: res?.route?.amount_out || "0", domain: K.CCTP_DOMAIN["noble-1"], fee: fee?.amount || "0" });
+  return { ok: !errs.length, errs, amountOut: res?.route?.amount_out, secs: res?.route?.estimated_route_duration_seconds, approvals: tx?.required_erc20_approvals || [] };
+}
+/* USDC.inj (Injective) -> allUSDC (Osmosis) via ibc-hooks */
+function validateInjToAll(res, ctx) {   // ctx: {inj, osmo, amountIn}
+  const errs = [];
+  checkCommon(errs, res, { src: K.INJ_ERC20, srcChain: "injective-1", dst: K.ALL, dstChain: "osmosis-1", amountIn: ctx.amountIn,
+                           chains: ["injective-1", "osmosis-1"], ops: ["transfer", "swap"] });
+  const ops = res?.route?.operations || [];
+  transferOp(errs, ops[0], "injective-1", "osmosis-1");
+  if (ops[1]?.swap) { const { venue, ops: so } = swapOps(ops[1]); checkSwap(errs, "route", venue, so, K.INJ_IBC, K.ALL); }
+  const m = singleCosmosMsg(errs, res, "injective-1", ctx.inj, "/ibc.applications.transfer.v1.MsgTransfer");
+  if (!m) return { ok: false, errs };
+  checkHookTransfer(errs, m, { channel: K.INJ_TO_OSMO, denom: K.INJ_ERC20, amountIn: ctx.amountIn, sender: ctx.inj, osmo: ctx.osmo, swapIn: K.INJ_IBC });
+  return { ok: !errs.length, errs, amountOut: res?.route?.amount_out, secs: res?.route?.estimated_route_duration_seconds };
+}
+/* uusdc (Noble) -> allUSDC (Osmosis) via ibc-hooks */
+function validateNobleToAll(res, ctx) {   // ctx: {noble, osmo, amountIn}
+  const errs = [];
+  checkCommon(errs, res, { src: "uusdc", srcChain: "noble-1", dst: K.ALL, dstChain: "osmosis-1", amountIn: ctx.amountIn,
+                           chains: ["noble-1", "osmosis-1"], ops: ["transfer", "swap"] });
+  const ops = res?.route?.operations || [];
+  transferOp(errs, ops[0], "noble-1", "osmosis-1");
+  if (ops[1]?.swap) { const { venue, ops: so } = swapOps(ops[1]); checkSwap(errs, "route", venue, so, K.NOBLE, K.ALL); }
+  const m = singleCosmosMsg(errs, res, "noble-1", ctx.noble, "/ibc.applications.transfer.v1.MsgTransfer");
+  if (!m) return { ok: false, errs };
+  checkHookTransfer(errs, m, { channel: K.NOBLE_TO_OSMO, denom: "uusdc", amountIn: ctx.amountIn, sender: ctx.noble, osmo: ctx.osmo, swapIn: K.NOBLE });
+  return { ok: !errs.length, errs, amountOut: res?.route?.amount_out, secs: res?.route?.estimated_route_duration_seconds };
+}
+const bridgeFee = (res, bridge) => (res?.route?.estimated_fees || []).find(f => f.bridge_id === bridge) || null;
+/* an Osmosis variant -> its Ethereum token over Axelar: the one genuine way out of an Axelar-wrapped variant. Skip's default
+   would swap it into another variant on the alloy pool instead, so the request restricts bridges and the check refuses swaps. */
+function validateAxlUnwrapFor(res, ctx) {   // ctx: {osmo, evm, amountIn, denom, token}
+  const errs = [];
+  checkCommon(errs, res, { src: ctx.denom, srcChain: "osmosis-1", dst: ctx.token, dstChain: "1", amountIn: ctx.amountIn,
+                           chains: ["osmosis-1", "1"], ops: ["axelar_transfer"], checkLoss: false, bridges: ["AXELAR"] });
+  const r = res?.route, fee = bridgeFee(res, "AXELAR");
+  if (!fee) errs.push("no Axelar fee quoted");
+  else {
+    if (Number(fee.usd_amount || 0) > K.MAX_BRIDGE_FEE_USD) errs.push(`Axelar fee $${Number(fee.usd_amount).toFixed(2)} exceeds $${K.MAX_BRIDGE_FEE_USD}`);
+    if (r && BigInt(r.amount_out || "0") + BigInt(fee.amount || "0") < BigInt(ctx.amountIn)) errs.push(`amount_out ${r.amount_out} loses more than the quoted Axelar fee`);
+  }
+  const m = singleCosmosMsg(errs, res, "osmosis-1", ctx.osmo, "/ibc.applications.transfer.v1.MsgTransfer");
+  if (!m) return { ok: false, errs };
+  if (m.source_port !== "transfer") errs.push(`port ${m.source_port}`);
+  if (m.source_channel !== K.OSMO_TO_AXELAR) errs.push(`channel ${m.source_channel} != ${K.OSMO_TO_AXELAR}`);
+  if (!(m.token?.denom === ctx.denom && String(m.token?.amount) === String(ctx.amountIn))) errs.push(`token ${JSON.stringify(m.token)} != ${ctx.amountIn} of ${ctx.denom}`);
+  if (m.sender !== ctx.osmo) errs.push(`sender ${m.sender} is not you`);
+  if (m.receiver !== K.AXELAR_GMP) errs.push(`receiver ${m.receiver} is not the pinned Axelar GMP account`);
+  if (m.timeout_timestamp && BigInt(m.timeout_timestamp) <= BigInt(Date.now()) * 1000000n) errs.push("IBC timeout already passed");
+  const memo = parseJsonField(m.memo, "Axelar memo", errs);
+  checkAxelarMemo(errs, memo, { chain: "Ethereum", receiver: K.AXELAR_RECEIVER_ETH, recipientHex: ctx.evm });
+  if (memo && fee && String(memo.fee?.amount) !== String(fee.amount)) errs.push(`memo fee ${memo.fee?.amount} != quoted ${fee.amount}`);
+  return { ok: !errs.length, errs, amountOut: r?.amount_out, secs: r?.estimated_route_duration_seconds, fee: fee?.amount };
+}
+const validateAxlUnwrap = (res, ctx) => validateAxlUnwrapFor(res, { ...ctx, denom: K.AXL, token: K.HUB["1"].usdc });
+/* Ethereum token -> alloy (Osmosis): Axelar GMP with the pool swap variant -> alloy executed on arrival */
+function validateEthToAlloyAxelar(res, ctx) {   // ctx: {evm, osmo, amountIn, alloy, pool, variant, token}
+  const errs = [];
+  checkCommon(errs, res, { src: ctx.token, srcChain: "1", dst: ctx.alloy, dstChain: "osmosis-1", amountIn: ctx.amountIn,
+                           chains: ["1", "osmosis-1"], ops: ["axelar_transfer", "swap"], bridges: ["AXELAR"] });
+  const r = res?.route, ops = r?.operations || [];
+  if (ops[0]?.axelar_transfer && !(ops[0].axelar_transfer.from_chain_id === "1" && ops[0].axelar_transfer.to_chain_id === "osmosis-1")) errs.push("hop 1 is not Axelar ethereum -> osmosis");
+  if (ops[1]?.swap) { const { venue, ops: so } = swapOps(ops[1]); checkSwap(errs, "route", venue, so, ctx.variant, ctx.alloy, ctx.pool); }
+  const fee = bridgeFee(res, "AXELAR")?.amount || "0";
+  if (BigInt(fee) > K.MAX_GMP_VALUE_WEI) errs.push(`Axelar relayer fee ${fee} wei exceeds the ${K.MAX_GMP_VALUE_WEI} cap`);
+  const tx = res?.txs?.[0]?.evm_tx;
+  if (!ctx.sym) errs.push("no Axelar token symbol to pin");
+  const dec = checkEvmTx(errs, tx, { kind: "axelar", chain: "1", signer: ctx.evm, to: K.AXELAR_RECEIVER_ETH, token: ctx.token, amountIn: ctx.amountIn, value: fee, receiver: K.ENTRY_POINT, axelarSymbol: ctx.sym });
+  if (tx && dec.payload) {
+    const sa = decodeAxelarPayload(dec.payload, errs);
+    if (sa) {
+      checkSwapAndAction(errs, sa, ctx.variant, ctx.alloy, ctx.amountIn, ctx.pool);
+      if (sa.post_swap_action?.transfer?.to_address !== ctx.osmo) errs.push(`final recipient ${sa.post_swap_action?.transfer?.to_address} is not your Osmosis address`);
+      if (sa.recovery_addr !== ctx.osmo) errs.push(`recovery_addr ${sa.recovery_addr} is not you`);
+    }
+  }
+  return { ok: !errs.length, errs, amountOut: r?.amount_out, secs: r?.estimated_route_duration_seconds, approvals: tx?.required_erc20_approvals || [], value: fee };
+}
+const validateEthToAll = (res, ctx) => validateEthToAlloyAxelar(res, { ...ctx, alloy: K.ALL, pool: K.POOL, variant: K.AXL, token: K.HUB["1"].usdc, sym: "USDC" });
+/* the Hub-side Eureka action Skip embeds (in an IBC memo from Osmosis, or in Ethereum calldata): pinned contracts, your
+   recovery address, and the onward hop it triggers */
+function checkEurekaAction(errs, memo, exp) {   // exp: {hub, channel, receiver?, receiverHex?}
+  if (!memo) { errs.push("no Eureka memo"); return null; }
+  if (memo.dest_callback?.address !== K.HUB_ENTRY) errs.push(`dest_callback ${memo.dest_callback?.address} is not the pinned Hub entry point`);
+  if (memo.wasm?.contract !== K.HUB_EUREKA_ACTION) errs.push(`Hub action contract ${memo.wasm?.contract} is not the pinned Eureka action contract`);
+  const ii = memo.wasm?.msg?.action?.action?.ibc_transfer?.ibc_info;
+  if (!ii) { errs.push("Hub action is not an ibc_transfer"); return null; }
+  if (ii.source_channel !== exp.channel) errs.push(`Hub onward channel ${ii.source_channel} != ${exp.channel}`);
+  if (ii.recover_address !== exp.hub) errs.push(`recover_address ${ii.recover_address} is not your Hub address`);
+  if (exp.receiver !== undefined && ii.receiver !== exp.receiver) errs.push(`onward receiver ${ii.receiver} != ${exp.receiver}`);
+  if (exp.receiverHex !== undefined && !sameAddr(ii.receiver, exp.receiverHex)) errs.push(`Ethereum receiver ${ii.receiver} is not your EVM address`);
+  return ii;
+}
+/* an Osmosis variant -> its Ethereum token over IBC Eureka: IBC to the Hub, Skip's Hub contract forwards over Eureka to you */
+function validateAtomUnwrap(res, ctx) {   // ctx: {osmo, hub, evm, amountIn, denom, token}
+  const errs = [];
+  checkCommon(errs, res, { src: ctx.denom, srcChain: "osmosis-1", dst: ctx.token, dstChain: "1", amountIn: ctx.amountIn,
+                           chains: ["osmosis-1", "cosmoshub-4", "1"], ops: ["transfer", "eureka_transfer"], checkLoss: false, bridges: ["EUREKA"] });
+  const r = res?.route, fee = bridgeFee(res, "EUREKA");
+  if (!fee) errs.push("no Eureka fee quoted");
+  else {
+    if (Number(fee.usd_amount || 0) > K.MAX_BRIDGE_FEE_USD) errs.push(`Eureka fee $${Number(fee.usd_amount).toFixed(2)} exceeds $${K.MAX_BRIDGE_FEE_USD}`);
+    if (r && BigInt(r.amount_out || "0") + BigInt(fee.amount || "0") < BigInt(ctx.amountIn)) errs.push(`amount_out ${r.amount_out} loses more than the quoted Eureka fee`);
+  }
+  transferOp(errs, r?.operations?.[0], "osmosis-1", "cosmoshub-4");
+  const m = singleCosmosMsg(errs, res, "osmosis-1", ctx.osmo, "/ibc.applications.transfer.v1.MsgTransfer");
+  if (!m) return { ok: false, errs };
+  if (m.source_port !== "transfer") errs.push(`port ${m.source_port}`);
+  if (m.source_channel !== K.OSMO_TO_HUB) errs.push(`channel ${m.source_channel} != ${K.OSMO_TO_HUB}`);
+  if (!(m.token?.denom === ctx.denom && String(m.token?.amount) === String(ctx.amountIn))) errs.push(`token ${JSON.stringify(m.token)} != ${ctx.amountIn} of ${ctx.denom}`);
+  if (m.sender !== ctx.osmo) errs.push(`sender ${m.sender} is not you`);
+  if (m.receiver !== K.HUB_ENTRY) errs.push(`receiver ${m.receiver} is not the pinned Hub entry point`);
+  if (m.timeout_timestamp && BigInt(m.timeout_timestamp) <= BigInt(Date.now()) * 1000000n) errs.push("IBC timeout already passed");
+  const ii = checkEurekaAction(errs, parseJsonField(m.memo, "Eureka memo", errs), { hub: ctx.hub, channel: K.HUB_EUREKA_CHANNEL, receiverHex: ctx.evm });
+  if (ii) {
+    if (ii.encoding !== "application/x-solidity-abi") errs.push(`Eureka encoding ${ii.encoding}`);
+    if (fee && String(ii.eureka_fee?.coin?.amount) !== String(fee.amount)) errs.push(`memo Eureka fee ${ii.eureka_fee?.coin?.amount} != quoted ${fee.amount}`);
+  }
+  return { ok: !errs.length, errs, amountOut: r?.amount_out, secs: r?.estimated_route_duration_seconds, fee: fee?.amount };
+}
+/* Ethereum token -> alloy (Osmosis) over IBC Eureka: Skip's Ethereum contract -> Hub -> Osmosis, pool swap on arrival */
+function validateEthToAlloyEureka(res, ctx) {   // ctx: {evm, osmo, hub, amountIn, alloy, pool, variant, token}
+  const errs = [];
+  checkCommon(errs, res, { src: ctx.token, srcChain: "1", dst: ctx.alloy, dstChain: "osmosis-1", amountIn: ctx.amountIn,
+                           chains: ["1", "cosmoshub-4", "osmosis-1"], ops: ["eureka_transfer", "transfer", "swap"], checkLoss: false, bridges: ["EUREKA"] });
+  const r = res?.route, ops = r?.operations || [], fee = bridgeFee(res, "EUREKA");
+  if (!fee) errs.push("no Eureka fee quoted");
+  else {
+    if (Number(fee.usd_amount || 0) > K.MAX_BRIDGE_FEE_USD) errs.push(`Eureka fee $${Number(fee.usd_amount).toFixed(2)} exceeds $${K.MAX_BRIDGE_FEE_USD}`);
+    if (r && BigInt(r.amount_out || "0") + BigInt(fee.amount || "0") < BigInt(ctx.amountIn) * 999n / 1000n) errs.push(`amount_out ${r.amount_out} loses more than the Eureka fee plus 0.1%`);
+  }
+  transferOp(errs, ops[1], "cosmoshub-4", "osmosis-1");
+  if (ops[2]?.swap) { const { venue, ops: so } = swapOps(ops[2]); checkSwap(errs, "route", venue, so, ctx.variant, ctx.alloy, ctx.pool); }
+  const tx = res?.txs?.[0]?.evm_tx;
+  const dec = checkEvmTx(errs, tx, { kind: "eureka", chain: "1", signer: ctx.evm, to: K.EUREKA_ETH, token: ctx.token, amountIn: ctx.amountIn, value: "0",
+    netAmount: res?.route?.amount_out || "0", fee: fee?.amount || "0", receiver: K.HUB_ENTRY });
+  if (tx) {
+    const ii = checkEurekaAction(errs, dec.memoText ? parseJsonField(dec.memoText, "Eureka memo", errs) : null, { hub: ctx.hub, channel: K.HUB_TO_OSMO, receiver: K.ENTRY_POINT });
+    const hook = ii ? parseJsonField(ii.memo, "Osmosis hook memo", errs) : null;
+    if (!hook?.wasm) errs.push("Hub onward transfer carries no Osmosis wasm hook");
+    else {
+      if (hook.wasm.contract !== K.ENTRY_POINT) errs.push(`hook contract ${hook.wasm.contract} is not the pinned entry point`);
+      const sa = hook.wasm.msg?.swap_and_action;
+      // the Eureka fee is taken before the swap, so min_asset is judged against what actually reaches Osmosis
+      checkSwapAndAction(errs, sa, ctx.variant, ctx.alloy, (BigInt(ctx.amountIn) - BigInt(fee?.amount || "0")).toString(), ctx.pool);
+      if (sa?.post_swap_action?.transfer?.to_address !== ctx.osmo) errs.push(`final recipient ${sa?.post_swap_action?.transfer?.to_address} is not your Osmosis address`);
+    }
+  }
+  return { ok: !errs.length, errs, amountOut: r?.amount_out, secs: r?.estimated_route_duration_seconds, approvals: tx?.required_erc20_approvals || [], fee: fee?.amount };
+}
+/* Gas purchase: a little allUSDC from Osmosis into a fee token, delivered to you. Pools are not pinned (any
+   route is fine for a dollar or five) but the contract, funds, affiliates, recipient and USD value are. */
+function validateGas(res, ctx) {   // ctx: {osmo, target, recipient, recipientHex}
+  const errs = [], G = GAS[ctx.target];
+  checkCommon(errs, res, { src: K.ALL, srcChain: "osmosis-1", dst: G.dst[0], dstChain: G.dst[1], amountIn: G.amount, checkLoss: false, bridges: ["CCTP", "IBC", "AXELAR"] });
+  const usd = Number(res?.route?.usd_amount_out || 0);
+  if (!(usd >= G.minUsd)) errs.push(`quote returns only $${usd.toFixed(3)} of gas for ${fmtUnits(G.amount)} allUSDC`);
+  for (const op of res?.route?.operations || []) {
+    const k = opKind(op);
+    if (!["swap", "transfer", "axelar_transfer"].includes(k)) errs.push(`unexpected operation ${k}`);
+    if (k === "swap" && swapOps(op).venue !== "osmosis-poolmanager") errs.push("swap venue is not the Osmosis poolmanager");
+  }
+  const m = singleCosmosMsg(errs, res, "osmosis-1", ctx.osmo, "/cosmwasm.wasm.v1.MsgExecuteContract");
+  if (!m) return { ok: false, errs };
+  if (m.sender !== ctx.osmo) errs.push(`msg.sender ${m.sender} is not you`);
+  if (m.contract !== K.ENTRY_POINT) errs.push(`contract ${m.contract} is not the pinned Skip entry point`);
+  if (!(Array.isArray(m.funds) && m.funds.length === 1 && m.funds[0].denom === K.ALL && String(m.funds[0].amount) === G.amount)) errs.push(`funds ${JSON.stringify(m.funds)} != ${fmtUnits(G.amount)} allUSDC`);
+  const inner = parseJsonField(m.msg, "contract msg", errs); const sa = inner?.swap_and_action;
+  if (!sa) { errs.push("no swap_and_action"); return { ok: false, errs }; }
+  if (Array.isArray(sa.affiliates) && sa.affiliates.length) errs.push("affiliates present");
+  if (sa.user_swap?.swap_exact_asset_in?.swap_venue_name !== "osmosis-poolmanager") errs.push("contract swap venue is not the Osmosis poolmanager");
+  const psa = sa.post_swap_action || {};
+  if (ctx.target === "osmo") {
+    if (psa.transfer?.to_address !== ctx.recipient) errs.push(`recipient ${psa.transfer?.to_address} is not you`);
+  } else {
+    const ii = psa.ibc_transfer?.ibc_info;
+    if (!ii) errs.push("post_swap_action is not an ibc_transfer");
+    else {
+      if (ii.recover_address !== ctx.osmo) errs.push(`recover_address ${ii.recover_address} is not you`);
+      if (ctx.target === "inj" && !(ii.source_channel === K.OSMO_TO_INJ && ii.receiver === ctx.recipient)) errs.push(`IBC ${ii.source_channel} to ${ii.receiver} is not your Injective address over ${K.OSMO_TO_INJ}`);
+      if (ctx.target === "noble" && !(ii.source_channel === K.OSMO_TO_NOBLE && ii.receiver === ctx.recipient)) errs.push(`IBC ${ii.source_channel} to ${ii.receiver} is not your Noble address over ${K.OSMO_TO_NOBLE}`);
+      if (G.axelarChain) {
+        if (ii.source_channel !== K.OSMO_TO_AXELAR || ii.receiver !== K.AXELAR_GMP) errs.push(`IBC ${ii.source_channel} to ${ii.receiver} is not the pinned Axelar GMP account over ${K.OSMO_TO_AXELAR}`);
+        checkAxelarMemo(errs, parseJsonField(ii.memo, "Axelar memo", errs), { chain: G.axelarChain, recipientHex: ctx.recipientHex });
+      }
+    }
+  }
+  return { ok: !errs.length, errs, amountOut: res?.route?.amount_out, usd, secs: res?.route?.estimated_route_duration_seconds };
+}
+
+/* ---------------- wallets: Keplr for the Cosmos chains and, via its EIP-1193 provider, the EVM chains ---------------- */
+const W = { osmo: null, inj: null, injHex: null, noble: null, nobleHex: null, hub: null, evm: null, btc: null, bal: {} };
+const cycleAddrs = () => ({ osmo: W.osmo, inj: W.inj, noble: W.noble, hub: W.hub, evm: W.evm ? W.evm.toLowerCase() : null, btc: W.btc || null });
+/* every address a cycle was started with must still be the connected one; a different account would strand the
+   earlier transfer and spend the new account's own balance */
+function addrsMismatch(recorded, current, needsBtc) {
+  if (!recorded) return "this cycle predates address binding; abandon it and use the stranded-funds offer instead";
+  for (const k of ["osmo", "inj", "noble", "hub", "evm"]) if (recorded[k] && recorded[k] !== current[k]) return `${k} address changed since this cycle started (${recorded[k]} → ${current[k]})`;
+  if (needsBtc && recorded.btc && recorded.btc !== current.btc) return `Bitcoin address changed since this cycle started (${recorded.btc} → ${current.btc})`;
+  return null;
+}
+async function connectKeplr() {
+  if (!window.keplr) throw new Error("Keplr not found");
+  await window.keplr.enable(["osmosis-1", "injective-1", "noble-1"]);
+  const [ko, ki, kn] = await Promise.all(["osmosis-1", "injective-1", "noble-1"].map(c => window.keplr.getKey(c)));
+  W.osmo = ko.bech32Address; W.inj = ki.bech32Address; W.noble = kn.bech32Address;
+  if (bech32Rehrp(W.osmo, "noble") !== W.noble) throw new Error(`Keplr's Noble account ${W.noble} is not the same key as its Osmosis account`);
+  W.injHex = bech32ToHex(W.inj); W.nobleHex = bech32ToHex(W.noble); W.hub = bech32Rehrp(W.osmo, "cosmos");   // same key, coin type 118
+  if (ki.ethereumHexAddress && !sameAddr(ki.ethereumHexAddress, W.injHex)) throw new Error(`Keplr reports ${ki.ethereumHexAddress} for Injective but the bech32 decodes to ${W.injHex}`);
+  if (!window.keplr.ethereum) throw new Error("this Keplr has no EVM provider (window.keplr.ethereum); update the extension");
+  const accs = await window.keplr.ethereum.request({ method: "eth_requestAccounts" });
+  W.evm = accs[0];
+  try { await connectBitcoin(); } catch (e) { W.btc = null; log("Bitcoin (Keplr):", e.message, "· BTC plans stay disabled"); }
+  log("Keplr:", W.osmo, W.inj, W.noble, W.evm);
+}
+const eth = (method, params = []) => { if (!window.keplr?.ethereum) throw new Error("Keplr EVM provider missing"); return window.keplr.ethereum.request({ method, params }); };
+async function ensureEvmChain(id) {
+  const want = K.EVM[id]; const cur = parseInt(await eth("eth_chainId"), 16);
+  if (cur === Number(id)) return;
+  try { await eth("wallet_switchEthereumChain", [{ chainId: want.hex }]); }
+  catch (e) {
+    if (e.code === 4902 || /unrecognized|not added|unknown chain/i.test(String(e.message))) {
+      await eth("wallet_addEthereumChain", [{ chainId: want.hex, chainName: want.name, nativeCurrency: { name: want.sym, symbol: want.sym, decimals: 18 }, rpcUrls: want.rpc, blockExplorerUrls: want.explorer }]);
+    } else throw e;
+  }
+  const now = parseInt(await eth("eth_chainId"), 16);
+  if (now !== Number(id)) throw new Error(`wallet is on chain ${now}, not ${want.name} (${id})`);
+}
+/* The one path to eth_sendTransaction. The wallet can change network or account while the page is polling a public RPC
+   for a receipt, so both are re-checked immediately before every prompt, not once per stage. */
+async function evmSend(chainId, tx) {
+  await ensureEvmChain(chainId);
+  const accs = await eth("eth_accounts");
+  if (!accs.some(a => sameAddr(a, W.evm))) throw new Error(`the wallet's active EVM account is no longer ${W.evm}; reselect it and Continue`);
+  return eth("eth_sendTransaction", [{ ...tx, from: W.evm }]);
+}
+/* Which approve() calls a token needs to reach `amount`: none, one, or (USDT-style, which refuses nonzero -> nonzero) a reset to zero first */
+function approvalPlan(have, amount) {
+  have = BigInt(have); amount = BigInt(amount);
+  if (have >= amount) return [];
+  return have > 0n ? ["0", amount.toString()] : [amount.toString()];
+}
+const approveCalldata = (spender, amount) => "0x095ea7b3" + pad32(spender) + BigInt(amount).toString(16).padStart(64, "0");
+/* approve (exact amount, only if the allowance is short) then send Skip's EVM tx; returns the hash after inclusion */
+async function sendSkipEvm(chainId, tx, approvals, note, onHash) {
+  for (const a of approvals) {
+    const have = await erc20Allowance(chainId, a.token_contract, W.evm, a.spender);
+    const plan = approvalPlan(have, a.amount);
+    if (!plan.length) { note("existing allowance suffices"); continue; }
+    for (const amt of plan) {
+      const h = await evmSend(chainId, { to: a.token_contract, data: approveCalldata(a.spender, amt), value: "0x0" });
+      note(amt === "0" ? `resetting a stale allowance of ${have} first: ${h}` : `approval ${h}`); await waitReceipt(chainId, h);
+    }
+  }
+  const hash = await evmSend(chainId, { to: tx.to, data: "0x" + String(tx.data).replace(/^0x/i, ""), value: "0x" + BigInt(tx.value || "0").toString(16) });
+  if (onHash) onHash(hash);
+  note(`sent ${hash}, waiting for receipt`);
+  await waitReceipt(chainId, hash);
+  return hash;
+}
+
+/* ---------------- balances / pool ---------------- */
+const LOW = { osmo: 50000n, avax: 5000000000000000n, eth: 2000000000000000n, inj: 1000000000000000n, noble: 50000n };
+function gasCell(bal, dec, sym, min) { return `<span class="${bal < min ? "warn" : ""}">${fmt2(bal, dec)} ${sym}${bal < min ? " (low)" : ""}</span>`; }
+async function refreshBalances() {
+  if (!W.osmo) return;
+  const jobs = [
+    (async () => { const [a, g] = await Promise.all([bankBalance("osmosis-1", W.osmo, ALLOY), bankBalance("osmosis-1", W.osmo, "uosmo")]); W.bal.osmo = a; $("bal_osmo").textContent = fmt2(a, decOf(ALLOY)); $("gas_osmo").innerHTML = gasCell(g, 6, "OSMO", LOW.osmo); })(),
+    (async () => { const injDenom = ALLOY === pgAlloy().alloy ? PG.injDenom : K.INJ_ERC20; $("injSym").textContent = ALLOY === pgAlloy().alloy ? "USDT (Peggy)" : "USDC.inj"; const [a, g] = await Promise.all([bankBalance("injective-1", W.inj, injDenom), bankBalance("injective-1", W.inj, "inj")]); W.bal.inj = a; $("bal_inj").textContent = fmt2(a); $("gas_inj").innerHTML = gasCell(g, 18, "INJ", LOW.inj); })(),
+    (async () => { W.bal.osmoVariant = ALLOY === pgAlloy().alloy ? await bankBalance("osmosis-1", W.osmo, PG.inj) : ALLOY === btcAlloy().alloy ? await bankBalance("osmosis-1", W.osmo, K.NBTC) : 0n; })(),
+    (async () => { const show = ALLOY === btcAlloy().alloy && W.btc; $("row_btc").style.display = show ? "" : "none"; if (show) { const b = await btcBalance(W.btc); W.bal.btc = b; $("bal_btc").textContent = fmt2(b, 8) + " BTC"; } else W.bal.btc = 0n; })(),
+    (async () => { try { const a = await bankBalance("noble-1", W.noble, "uusdc"); W.bal.noble = a; $("bal_noble").textContent = fmt2(a); $("gas_noble").innerHTML = gasCell(a, 6, "USDC", LOW.noble); } catch (e) { W.bal.noble = null; $("bal_noble").textContent = "?"; $("gas_noble").innerHTML = `<span class="warn">unreadable</span>`; throw e; } })(),
+    (async () => { const [a, g] = await Promise.all([erc20BalanceOf("43114", K.HUB["43114"].usdc, W.evm), evmNative("43114", W.evm)]); W.bal.avax = a; $("bal_avax").textContent = fmt2(a); $("gas_avax").innerHTML = gasCell(g, 18, "AVAX", LOW.avax); })(),
+    (async () => { const et = ethTokenOf(ALLOY) || { token: K.HUB["1"].usdc, sym: "USDC", dec: 6 }; $("ethSym").textContent = et.sym; const [a, g] = await Promise.all([erc20BalanceOf("1", et.token, W.evm), evmNative("1", W.evm)]); W.bal.eth = a; $("bal_eth").textContent = fmt2(a, et.dec); $("gas_eth").innerHTML = gasCell(g, 18, "ETH", LOW.eth); })(),
+  ];
+  const rs = await Promise.allSettled(jobs);
+  rs.forEach((r, i) => { if (r.status === "rejected") log(["osmosis", "injective", "noble", "avalanche", "ethereum", "osmosis variant", "bitcoin"][i] + " balance:", r.reason?.message || r.reason); });
+  document.querySelectorAll("[data-fund]").forEach(b => b.disabled = BUSY);
+  renderStranded(); syncStart();
+}
+const PALETTE = ["#7b67f6", "#30b5bd", "#f59e0b", "#ef4444", "#22c55e", "#ec4899", "#0ea5e9", "#a3e635", "#f97316", "#8b5cf6"];
+const ASSETS = {};
+const decOf = d => ASSETS[d]?.decimals ?? ALLOYS[d]?.dec ?? 6;
+/* transmuter limiters come back as [[denom, label], limiter] pairs (v3) or as objects; describe either */
+function describeLimiter(entry) {
+  const [key, lim] = Array.isArray(entry) ? entry : [[entry.denom, entry.label], entry.limiter || entry];
+  const label = esc(Array.isArray(key) ? key[1] : "");
+  if (lim?.static_limiter) return `static ≤ ${(Number(lim.static_limiter.upper_limit) * 100).toFixed(1)}%${label ? ` (${label})` : ""}`;
+  if (lim?.change_limiter) return `change ±${(Number(lim.change_limiter.boundary_offset) * 100).toFixed(1)}%${label ? ` (${label})` : ""}`;
+  return "unrecognised limiter";
+}
+/* describeLimiter output is inserted as HTML: the label above is escaped; everything else it emits is literal text */
+const limiterDenom = entry => Array.isArray(entry) ? entry[0]?.[0] : entry?.denom;
+/* the alloy's valid variants: the transmuter's asset configs minus the alloy denom itself (which it lists too) */
+function variantConfigs(assetConfigs, alloyDenom) {
+  const out = { denoms: [], nf: {} };
+  for (const c of assetConfigs || []) { if (!c?.denom || c.denom === alloyDenom) continue; out.denoms.push(c.denom); out.nf[c.denom] = String(c.normalization_factor || "1"); }
+  return out;
+}
+function loadAlloys() {
+  for (const a of K.ALLOYS) { const denom = `factory/${a.contract}/alloyed/${a.sym}`; ALLOYS[denom] = { denom, ...a }; }
+  const sel = $("alloy"); sel.innerHTML = "";
+  for (const a of Object.values(ALLOYS)) { const o = document.createElement("option"); o.value = a.denom; o.textContent = `${alloyName(a)} (${a.sym}, pool ${a.pool})`; sel.appendChild(o); }
+  ALLOY = ALLOYS[K.ALL] ? K.ALL : Object.keys(ALLOYS)[0]; sel.value = ALLOY;
+}
+/* symbols and decimals for display, from the generated frontend assetlist (osmosis-labs/assetlists); Skip's registry is
+   the fallback if GitHub is unreachable, and the denom tail after that */
+async function loadSymbols() {
+  try {
+    const d = await jget(K.ASSETLIST);
+    for (const a of d.assets || []) if (a.coinMinimalDenom) ASSETS[a.coinMinimalDenom] = { symbol: a.symbol, decimals: a.decimals };
+    return;
+  } catch (e) { log("frontend assetlist unavailable, falling back to Skip's registry:", e.message); }
+  try {
+    const d = await jget(`${K.SKIP}/v2/fungible/assets?chain_ids=osmosis-1&include_cw20_assets=false`);
+    for (const a of d.chain_to_assets_map?.["osmosis-1"]?.assets || []) ASSETS[a.denom] = { symbol: a.recommended_symbol || a.symbol, decimals: a.decimals };
+  } catch (e) { log("symbols unavailable:", e.message); }
+}
+async function refreshPool() {
+  const a = ALLOYS[ALLOY]; if (!a) return;
+  $("poolLegend").textContent = `${alloyName(a)} · pool ${a.pool}`;
+  $("alloySym").textContent = a.sym;
+  FROZEN[ALLOY] = "pool state is being read";   // fail closed: cleared only by a fully successful read below
+  try {
+    const bal = await lcdGet("osmosis-1", `/cosmos/bank/v1beta1/balances/${a.contract}?pagination.limit=100`);
+    const held = Object.fromEntries((bal.balances || []).map(b => [b.denom, BigInt(b.amount)]));
+    // the contract's own asset configs are the valid variants; what it happens to hold is not (anyone can send it tokens),
+    // and variants can be added or removed after instantiation. The instantiate message is only the fallback.
+    const vc = variantConfigs((await smartQuery(a.contract, { list_asset_configs: {} })).asset_configs, a.denom);
+    if (!vc.denoms.length) throw new Error("the contract returned no asset configs");
+    const denoms = vc.denoms;
+    // shares are compared in the transmuter's normalised units, since variants may carry different exponents
+    const norm = x => (held[x] || 0n) * 10n ** 18n / BigInt(vc.nf[x] || "1");
+    const rows = denoms.map(x => ({ denom: x, sym: symOf(x), amt: held[x] || 0n, n: norm(x) })).sort((p, q) => (q.n > p.n) - (q.n < p.n));
+    const tot = rows.reduce((t, r) => t + r.n, 0n);
+    W.pool = { denoms: Object.fromEntries(rows.map(r => [r.denom, r.amt])), tot };
+    let lims = null; try { lims = (await smartQuery(a.contract, { list_limiters: {} })).limiters || []; } catch {}
+    // freeze state: a transmuter can be deactivated by its admin, and individual denoms can be marked corrupted; either disables cycling here
+    let active = null, corrupted = null;
+    try { active = (await smartQuery(a.contract, { is_active: {} })).is_active; } catch {}
+    try { corrupted = (await smartQuery(a.contract, { get_corrupted_denoms: {} })).corrupted_denoms || []; } catch {}
+    FROZEN[ALLOY] = active === false ? "the transmuter is inactive (frozen by its admin)" : corrupted && corrupted.length ? `corrupted variant${corrupted.length > 1 ? "s" : ""}: ${corrupted.map(symOf).join(", ")}` : active === null ? "frozen state could not be read" : null;
+    $("poolLegend").textContent = `${alloyName(a)} · pool ${a.pool}` + (FROZEN[ALLOY] ? " · FROZEN" : "");
+    $("poolLegend").className = FROZEN[ALLOY] && active === false ? "err" : "";
+    const limFor = x => (corrupted && corrupted.includes(x) ? `<span class="err">corrupted</span> ` : "") + (lims === null ? `<span class="muted">unknown</span>` : (lims.filter(l => limiterDenom(l) === x).map(describeLimiter).join("<br>") || `<span class="muted">none</span>`));
+    const color = i => PALETTE[i % PALETTE.length];
+    const totalDisplay = Object.values(vc.nf).every(v => v === "1") ? fmt2(rows.reduce((t, r) => t + r.amt, 0n), decOf(a.denom)) : "–";
+    $("poolRows").innerHTML =
+      `<tr><td colspan="4" style="padding:2px 8px 6px"><div class="bar">${rows.map((r, i) => `<span style="width:${tot ? Number(r.n * 10000n / tot) / 100 : 0}%;background:${color(i)}" title="${esc(r.sym)} ${pct(r.n, tot)}"></span>`).join("")}</div></td></tr>` +
+      rows.map((r, i) => `<tr><td><span class="sw" style="background:${color(i)}"></span>${esc(r.sym)}</td><td class="num">${fmt2(r.amt, decOf(r.denom))}</td><td class="num">${pct(r.n, tot)}</td><td>${limFor(r.denom)}</td></tr>`).join("") +
+      `<tr><td><b>Total backing</b></td><td class="num"><b>${totalDisplay}</b></td><td class="num"></td><td></td></tr>`;
+    $("poolMeta").innerHTML = FROZEN[ALLOY] ? `<span class="${active === false ? "err" : "warn"}">Cycling disabled: ${esc(FROZEN[ALLOY])}.</span>` : "";
+    populateVariants(rows.map(r => r.denom));
+  } catch (e) { FROZEN[ALLOY] = "pool state could not be read (" + e.message + ")"; $("poolRows").innerHTML = `<tr><td colspan="4" class="err">${esc(e.message)}</td></tr>`; $("poolMeta").innerHTML = `<span class="err">Cycling disabled: ${esc(FROZEN[ALLOY])}.</span>`; }
+  updateEstimate(); syncStart();
+}
+function populateVariants(denoms) {
+  for (const id of ["reduce", "increase"]) {
+    const cur = $(id).value; $(id).innerHTML = "";
+    for (const d of denoms) { const o = document.createElement("option"); o.value = d; o.textContent = symOf(d); $(id).appendChild(o); }
+    if (denoms.includes(cur)) $(id).value = cur;
+  }
+  if ($("reduce").value === $("increase").value && denoms.length > 1) $("increase").value = denoms.find(d => d !== $("reduce").value);
+}
+/* the route endpoint takes no addresses and rejects slippage_tolerance_percent */
+async function skipQuote(src, srcChain, dst, dstChain, amount) {
+  const { slippage_tolerance_percent, ...opts } = SKIP_OPTS;
+  const r = await skipPost("/v2/fungible/route", { ...opts, source_asset_denom: src, source_asset_chain_id: srcChain, dest_asset_denom: dst, dest_asset_chain_id: dstChain, amount_in: amount });
+  const sw = (r.operations || []).filter(o => o.swap).flatMap(o => swapOps(o).ops);
+  return { amountOut: r.amount_out, pools: sw.map(x => String(x.pool)), removesVariant: sw.some(x => String(x.pool) === K.POOL && x.denom_in === K.ALL && x.denom_out === K.NOBLE), secs: r.estimated_route_duration_seconds };
+}
+let quoteSeq = 0, quoteTimer = null;
+function scheduleQuotes() { clearTimeout(quoteTimer); quoteTimer = setTimeout(updateQuotes, 600); }
+async function updateQuotes() {
+  const key = planKey(), plan = PLANS[key], box = $("quotes");
+  const first = plan?.stages[0], hub = first === "A1" ? "43114" : first === "E1" ? "1" : null;
+  if (!plan) { box.textContent = ""; return; }
+  if (!hub) { box.innerHTML = `<span class="muted">Exit quotes: this direction exits into ${esc(symOf($("reduce").value))} with the page's own pool ${esc(ALLOYS[ALLOY]?.pool || "")} swap; the Skip exit toggle does not apply.</span>`; return; }
+  let amt; try { amt = parseAmount($("amount").value, K.DEC); } catch { box.textContent = ""; return; }
+  const seq = ++quoteSeq; const H = K.HUB[hub];
+  box.innerHTML = `<span class="muted">quoting both exit routes…</span>`;
+  const [pinned, free] = await Promise.allSettled([skipQuote(K.NOBLE, "osmosis-1", H.usdc, hub, amt), skipQuote(K.ALL, "osmosis-1", H.usdc, hub, amt)]);
+  if (seq !== quoteSeq) return;
+  const line = (label, q, extra) => q.status === "fulfilled"
+    ? `<div>${label}: <b>${fmt2(q.value.amountOut)} USDC</b> on ${esc(H.name)}${extra(q.value)}</div>`
+    : `<div>${label}: <span class="err">${esc(q.reason?.message || "no quote")}</span></div>`;
+  const diff = pinned.status === "fulfilled" && free.status === "fulfilled" ? BigInt(free.value.amountOut) - BigInt(pinned.value.amountOut) : null;
+  box.innerHTML =
+    line("Pinned exit (pool 3497, 1:1, then Skip from USDC.noble)", pinned, () => "") +
+    line("Skip's own exit from allUSDC", free, v => ` via pool${v.pools.length > 1 ? "s" : ""} ${esc(v.pools.join(" → "))}` + (v.removesVariant ? " (removes USDC.noble from the alloy)" : ` <span class="warn">(bypasses pool 3497: dilutes USDC.noble's share, removes none)</span>`)) +
+    (diff !== null ? `<div>Difference: ${diff >= 0n ? "+" : "-"}${fmt2(diff < 0n ? -diff : diff)} USDC for Skip's route${$("freeExit").checked ? " · <b>Skip's route will be used</b>" : " · pinned route will be used"}</div>` : "");
+}
+const planKey = () => { const rd = $("reduce").value, inc = $("increase").value; return Object.keys(PLANS).find(k => PLANS[k].alloy === ALLOY && PLANS[k].reduce === rd && PLANS[k].increase === inc) || null; };
+
+/* ---------------- cosmos sign + broadcast (SIGN_MODE_DIRECT everywhere) ---------------- */
+function pubkeyTypeUrl(chainId, algo) {
+  if (chainId === "injective-1") return "/injective.crypto.v1beta1.ethsecp256k1.PubKey";
+  if (String(algo || "").includes("ethsecp256k1")) return "/ethermint.crypto.v1.ethsecp256k1.PubKey";
+  return "/cosmos.crypto.secp256k1.PubKey";
+}
+async function gasPriceOf(chainId) {
+  if (chainId !== "osmosis-1") return CHAIN[chainId].gasPrice;
+  try { const j = await lcdGet("osmosis-1", "/osmosis/txfees/v1beta1/cur_eip_base_fee"); const b = Number(j.base_fee); if (b > 0) return Math.max(b, K.OSMO_MIN_GAS_PRICE) * 1.25; } catch {}
+  return K.OSMO_MIN_GAS_PRICE * 1.5;
+}
+async function signAndBroadcast(chainId, signer, anys, onNote, onHash) {
+  const C = CHAIN[chainId], eps = await proveEndpoints(chainId);
+  const k = await window.keplr.getKey(chainId);
+  if (k.bech32Address !== signer) throw new Error(`Keplr's ${chainId} account is ${k.bech32Address}, the message was built for ${signer}`);
+  const acc = await getAccount(chainId, signer);
+  const pkAny = Any(pubkeyTypeUrl(chainId, k.algo), bytesF(1, k.pubKey));
+  const body = TxBody(anys, "");
+  const simAI = AuthInfo([SignerInfo(pkAny, 1, acc.sequence)], Fee([{ denom: C.feeDenom, amount: "0" }], "400000"));
+  let sim, simEp;
+  for (const ep of eps) { try { sim = await lcdPost(ep, "/cosmos/tx/v1beta1/simulate", { tx_bytes: b64(TxRaw(body, simAI, [new Uint8Array(65)])) }); simEp = ep; break; } catch (e) { onNote(`simulate on ${ep} failed: ${e.message}`); if (/insufficient|invalid|unauthorized|not found|failed to execute|slippage|min/i.test(e.message)) throw e; } }
+  if (!sim) throw new Error("simulation failed on every endpoint");
+  const used = Number(sim.gas_info?.gas_used || 0); if (!used) throw new Error("node returned no gas_used");
+  const gas = Math.ceil(used * 1.4), fee = String(Math.ceil(gas * await gasPriceOf(chainId)));
+  onNote(`gas ${gas}, fee ${fmtUnits(fee, C.feeDec)} ${C.feeSym}`);
+  const authInfo = AuthInfo([SignerInfo(pkAny, 1, acc.sequence)], Fee([{ denom: C.feeDenom, amount: fee }], String(gas)));
+  const signed = await window.keplr.signDirect(chainId, signer, { bodyBytes: body, authInfoBytes: authInfo, chainId, accountNumber: String(acc.accountNumber) });
+  const bb = signed.signed?.bodyBytes ? new Uint8Array(signed.signed.bodyBytes) : body;
+  const ab = signed.signed?.authInfoBytes ? new Uint8Array(signed.signed.authInfoBytes) : authInfo;
+  const raw = TxRaw(bb, ab, [unb64(signed.signature.signature)]);
+  const hash = await txHashOf(raw);
+  if (onHash) onHash(hash);   // recorded before the POST: a reload after this point resumes by waiting, not by signing again
+  onNote(`broadcasting ${hash} via ${simEp}`);
+  const res = await lcdPost(simEp, "/cosmos/tx/v1beta1/txs", { tx_bytes: b64(raw), mode: "BROADCAST_MODE_SYNC" });
+  const tr = res.tx_response || {};
+  if (Number(tr.code) !== 0) throw new Error(`rejected (code ${tr.code}): ${tr.raw_log || tr.log || "no log"}`);
+  for (let i = 0; i < 40; i++) {
+    await sleep(3000);
+    try { const q = await jget(`${simEp}/cosmos/tx/v1beta1/txs/${hash}`); if (q.tx_response) { if (Number(q.tx_response.code) !== 0) throw new Error(`failed in block: ${q.tx_response.raw_log}`); return hash; } }
+    catch (e) { if (/failed in block/.test(e.message)) throw e; }
+  }
+  throw new Error(`tx ${hash} accepted but not seen in a block after 2 minutes; check an explorer before doing anything else`);
+}
+
+/* ---------------- confirmation sheet ---------------- */
+let sheetCancel = null;
+function confirmSheet({ title, rows, warn }) {
+  return new Promise(resolve => {
+    sheetCancel = () => { $("sheetBg").classList.remove("on"); sheetCancel = null; resolve(false); };
+    $("sheet").innerHTML = `<h2>${esc(title)}</h2><div class="rows">${rows.map(([k, v]) => `<div><span>${esc(k)}</span><span>${esc(v)}</span></div>`).join("")}</div>
+      ${warn ? `<div class="warnbox">${esc(warn)}</div>` : ""}
+      <div class="btnrow"><button id="shOk" class="primary">Sign in Keplr</button><button id="shNo">Cancel</button></div>`;
+    $("sheetBg").classList.add("on");
+    const done = v => { $("sheetBg").classList.remove("on"); sheetCancel = null; resolve(v); };
+    $("shOk").onclick = () => done(true); $("shNo").onclick = () => done(false);
+  });
+}
+const refused = v => new Error("route refused:\n• " + v.errs.join("\n• "));
+/* What became of a recorded transaction. "exists" (included, success) and "pending" (known to the network, not yet
+   included) mean: wait. "failed" means: included but reverted, nothing moved. "unknown" means the network has never
+   seen it, as far as a few polls can tell; that is NOT proof it will not land, so nothing is cleared automatically. */
+async function txState(chain, hash) {
+  for (let i = 0; i < 6; i++) {
+    try {
+      if (chain === "bitcoin") { try { await jget(`${K.MEMPOOL}/tx/${hash}`); return "exists"; } catch {} }
+      else if (K.EVM[chain]) {
+        const r = await rpc(chain, "eth_getTransactionReceipt", [hash]);
+        if (r) return r.status === "0x1" ? "exists" : "failed";
+        if (await rpc(chain, "eth_getTransactionByHash", [hash])) return "pending";
+      } else {
+        const eps = await proveEndpoints(chain);
+        for (const ep of eps) { try { const q = await jget(`${ep}/cosmos/tx/v1beta1/txs/${hash}`); if (q.tx_response) return Number(q.tx_response.code) === 0 ? "exists" : "failed"; } catch {} }
+      }
+    } catch {}
+    await sleep(5000);
+  }
+  return "unknown";
+}
+/* explicit, user-driven: forget a recorded tx so the stage can run again. Only reachable from the message that
+   explains what was found, never from the automatic path. */
+function discardRecordedTx() {
+  const plan = planOf(CYCLE); if (!CYCLE || !plan) return;
+  const key = plan.stages[CYCLE.idx]; if (!key) return;
+  setStage(key, { hash: undefined, txChain: undefined, before: undefined, expected: undefined, state: undefined, note: "recorded transaction discarded by you; the stage will sign again on Continue" });
+  $("cycleBox").innerHTML = "";
+}
+/* arrival means an increase: poll a balance reader until it rose by (nearly) the expected amount */
+async function waitArrival(read, before, expected, what, maxPolls = 60, dec = 6) {
+  let after = before;
+  for (let i = 0; i < maxPolls && !nearly(after - before, expected); i++) { await sleep(5000); after = await read(); }
+  const received = after - before;
+  if (!nearly(received, expected)) throw new Error(`${what} rose by only ${fmtUnits(received, dec)}; expected ${fmtUnits(expected, dec)}.`);
+  return received.toString();
+}
+const approvalRow = (v, tx, sym) => ["Approval", v.approvals.length ? `${fmtUnits(v.approvals[0].amount)} ${sym} to ${tx.to}` : "none needed"];
+const approvalWarn = v => v.approvals.length ? "Two prompts: the exact-amount approval, then the bridge call." : null;
+
+/* ============================================================================
+   Stages. Each takes the amount coming in and returns the amount that verifiably
+   arrived at its destination, which becomes the next stage's input. Hub-parameterised
+   stages are built by the factories below; A/B use Avalanche, C/D/E use Ethereum.
+   ============================================================================ */
+const hubUsdc = hub => erc20BalanceOf(hub, K.HUB[hub].usdc, W.evm);
+function exitToHub(hub) { const H = K.HUB[hub]; return { title: `Osmosis: allUSDC → USDC.noble → Noble → ${H.name} USDC`, who: "Keplr, Osmosis (pinned: the pool 3497 swap built here plus Skip's Noble transfer; or Skip's own exit route if allowed)",
+  chain: "osmosis-1", txChain: "osmosis-1", read: () => hubUsdc(hub), what: `${H.name} USDC`, async run(amountIn, note, mark) {
+  await assertChannel("osmosis-1", K.OSMO_TO_NOBLE, "noble-1");
+  const before = await hubUsdc(hub);
+  if (CYCLE?.freeExit) {
+    const resF = await skipRoute(K.ALL, "osmosis-1", H.usdc, hub, amountIn, { "osmosis-1": W.osmo, "noble-1": W.noble, [hub]: W.evm });
+    const vf = validateFreeExitToHub(resF, { osmo: W.osmo, evm: W.evm, amountIn, hub }); if (!vf.ok) throw refused(vf);
+    mark({ before: before.toString(), expected: vf.amountOut });
+    note(`Skip's exit: pools ${vf.pools.join(" → ")}${vf.removesVariant ? "" : " (does not take USDC.noble out of the alloy)"}`);
+    if (!await confirmSheet({ title: "Sign on Osmosis", rows: [["You send", `${fmtUnits(amountIn)} allUSDC`], ["Skip's swap path", `pools ${vf.pools.join(" → ")} → USDC.noble`],
+      ["Effect on the alloy", vf.removesVariant ? "removes USDC.noble from pool 3497" : "does NOT remove USDC.noble; only dilutes its share"], ["Then", `IBC ${K.OSMO_TO_NOBLE} → Noble → CCTP v1 → ${H.name}`],
+      ["Arrives as", `${fmtUnits(vf.amountOut)} USDC on ${H.name}`], ["To", W.evm], ["Contract", K.ENTRY_POINT], ["Estimated", `${vf.secs || "?"} s`]],
+      warn: vf.removesVariant ? null : "This route bypasses the transmuter. The alloy's Noble balance will be unchanged after the cycle." })) throw new Error("cancelled");
+    const hash = await signAndBroadcast("osmosis-1", W.osmo, resF.txs[0].cosmos_tx.msgs.map(skipMsgToAny), note, h => mark({ hash: h }));
+    note(`tx ${hash}`); await trackToCompletion("osmosis-1", hash, s => note("Skip: " + s));
+    return waitArrival(() => hubUsdc(hub), before, vf.amountOut, `${H.name} USDC`);
+  }
+  const res = await skipRoute(K.NOBLE, "osmosis-1", H.usdc, hub, amountIn, { "osmosis-1": W.osmo, "noble-1": W.noble, [hub]: W.evm });
+  const v = validateNobleToHub(res, { osmo: W.osmo, evm: W.evm, amountIn, hub }); if (!v.ok) throw refused(v);
+  mark({ before: before.toString(), expected: v.amountOut });
+  const anys = [
+    Any("/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn", MsgSwapExactAmountIn({ sender: W.osmo, routes: [{ poolId: K.POOL, tokenOutDenom: K.NOBLE }],
+      tokenIn: { denom: K.ALL, amount: amountIn }, tokenOutMinAmount: amountIn })),   // 1:1 or the whole tx fails
+    skipMsgToAny(res.txs[0].cosmos_tx.msgs[0]),
+  ];
+  if (!await confirmSheet({ title: "Sign on Osmosis", rows: [["Message 1", `swap ${fmtUnits(amountIn)} allUSDC → USDC.noble on pool ${K.POOL}, minimum out ${fmtUnits(amountIn)}`],
+    ["Message 2", `IBC ${fmtUnits(amountIn)} USDC.noble over ${K.OSMO_TO_NOBLE} to Noble's orbiter, CCTP v1 onward to ${H.name}`],
+    ["Arrives as", `${fmtUnits(v.amountOut)} USDC on ${H.name}`], ["To", W.evm], ["Atomic", "if either message fails nothing moves"], ["Estimated", `${v.secs || "?"} s`]] })) throw new Error("cancelled");
+  const hash = await signAndBroadcast("osmosis-1", W.osmo, anys, note, h => mark({ hash: h }));
+  note(`tx ${hash}`); await trackToCompletion("osmosis-1", hash, s => note("Skip: " + s));
+  return waitArrival(() => hubUsdc(hub), before, v.amountOut, `${H.name} USDC`);
+} }; }
+function hubToInj(hub) { const H = K.HUB[hub]; return { title: `${H.name}: USDC → Injective USDC.inj (CCTP v2)`, who: `Keplr EVM, ${H.name}`,
+  chain: hub, txChain: hub, read: () => bankBalance("injective-1", W.inj, K.INJ_ERC20), what: "Injective USDC.inj", async run(amountIn, note, mark) {
+  const bal = await hubUsdc(hub);
+  if (bal < BigInt(amountIn)) throw new Error(`${H.name} USDC balance ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this stage expects`);
+  const before = await bankBalance("injective-1", W.inj, K.INJ_ERC20);
+  const res = await skipRoute(H.usdc, hub, K.INJ_EVM_USDC, K.INJ_EVM_CHAIN, amountIn, { [hub]: W.evm, [K.INJ_EVM_CHAIN]: W.injHex });
+  const v = validateHubToInj(res, { evm: W.evm, injHex: W.injHex, amountIn, hub }); if (!v.ok) throw refused(v);
+  mark({ before: before.toString(), expected: v.amountOut });
+  const tx = res.txs[0].evm_tx;
+  if (!await confirmSheet({ title: `Sign on ${H.name}`, rows: [["You send", `${fmtUnits(amountIn)} USDC`], ["Via", "CCTP v2 burn → mint on Injective"], ["Arrives as", `${fmtUnits(v.amountOut)} USDC.inj`],
+    ["To (your Injective account)", `${W.inj} = ${W.injHex}`], ["Adapter", tx.to], approvalRow(v, tx, "USDC"), ["Estimated", `${v.secs || "?"} s`]], warn: approvalWarn(v) })) throw new Error("cancelled");
+  const hash = await sendSkipEvm(hub, tx, v.approvals, note, h => mark({ hash: h }));
+  await trackToCompletion(hub, hash, s => note("Skip: " + s));
+  return waitArrival(() => bankBalance("injective-1", W.inj, K.INJ_ERC20), before, v.amountOut, "Injective USDC.inj");
+} }; }
+function injToHub(hub) { const H = K.HUB[hub]; return { title: `Injective EVM: USDC.inj → ${H.name} USDC (CCTP v2)`, who: "Keplr EVM, Injective EVM (chain 1776)",
+  chain: K.INJ_EVM_CHAIN, txChain: K.INJ_EVM_CHAIN, read: () => hubUsdc(hub), what: `${H.name} USDC`, async run(amountIn, note, mark) {
+  const bal = await bankBalance("injective-1", W.inj, K.INJ_ERC20);
+  if (bal < BigInt(amountIn)) throw new Error(`Injective USDC.inj balance ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this stage expects`);
+  const before = await hubUsdc(hub);
+  const res = await skipRoute(K.INJ_EVM_USDC, K.INJ_EVM_CHAIN, H.usdc, hub, amountIn, { [K.INJ_EVM_CHAIN]: W.injHex, [hub]: W.evm });
+  const v = validateInjToHub(res, { injHex: W.injHex, evm: W.evm, amountIn, hub }); if (!v.ok) throw refused(v);
+  mark({ before: before.toString(), expected: v.amountOut });
+  const tx = res.txs[0].evm_tx;
+  if (!await confirmSheet({ title: "Sign on Injective EVM", rows: [["You send", `${fmtUnits(amountIn)} USDC.inj`], ["From", `${W.injHex} (= ${W.inj})`], ["Via", `CCTP v2 burn → mint on ${H.name}`], ["Arrives as", `${fmtUnits(v.amountOut)} USDC`],
+    ["To", W.evm], ["Adapter", tx.to], approvalRow(v, tx, "USDC.inj"), ["Estimated", `${v.secs || "?"} s`]],
+    warn: "Keplr will switch to Injective EVM (chain 1776), adding it if needed. Gas is INJ from the same account." + (v.approvals.length ? " Two prompts: approval, then burn." : "") })) throw new Error("cancelled");
+  const hash = await sendSkipEvm(K.INJ_EVM_CHAIN, tx, v.approvals, note, h => mark({ hash: h }));
+  await trackToCompletion(K.INJ_EVM_CHAIN, hash, s => note("Skip: " + s));
+  return waitArrival(() => hubUsdc(hub), before, v.amountOut, `${H.name} USDC`);
+} }; }
+function hubToNoble(hub) { const H = K.HUB[hub]; return { title: `${H.name}: USDC → Noble USDC (CCTP v1, to your Noble account)`, who: `Keplr EVM, ${H.name}`,
+  chain: hub, txChain: hub, read: () => bankBalance("noble-1", W.noble, "uusdc"), what: "Noble USDC", async run(amountIn, note, mark) {
+  const bal = await hubUsdc(hub);
+  if (bal < BigInt(amountIn)) throw new Error(`${H.name} USDC balance ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this stage expects`);
+  const before = await bankBalance("noble-1", W.noble, "uusdc");   // a read failure stops the stage; a zero baseline would let pre-existing USDC pass as the arrival
+  const res = await skipRoute(H.usdc, hub, "uusdc", "noble-1", amountIn, { [hub]: W.evm, "noble-1": W.noble });
+  const v = validateHubToNoble(res, { evm: W.evm, nobleHex: W.nobleHex, amountIn, hub }); if (!v.ok) throw refused(v);
+  mark({ before: before.toString(), expected: v.amountOut });
+  const tx = res.txs[0].evm_tx;
+  if (!await confirmSheet({ title: `Sign on ${H.name}`, rows: [["You send", `${fmtUnits(amountIn)} USDC`], ["Via", "CCTP v1 burn → mint on Noble"], ["Arrives as", `${fmtUnits(v.amountOut)} USDC on Noble`],
+    ["To", `${W.noble} (= ${W.nobleHex})`], ["Adapter", tx.to], approvalRow(v, tx, "USDC"), ["Estimated", `${v.secs || "?"} s`]], warn: approvalWarn(v) })) throw new Error("cancelled");
+  const hash = await sendSkipEvm(hub, tx, v.approvals, note, h => mark({ hash: h }));
+  await trackToCompletion(hub, hash, s => note("Skip: " + s));
+  return waitArrival(() => bankBalance("noble-1", W.noble, "uusdc"), before, v.amountOut, "Noble USDC");
+} }; }
+const STAGE = {
+  A1: exitToHub("43114"), E1: exitToHub("1"),
+  A2: hubToInj("43114"),  C3: hubToInj("1"),
+  B2: injToHub("43114"),  C2: injToHub("1"),
+  B3: hubToNoble("43114"), D2: hubToNoble("1"),
+  A3: { title: "Injective: USDC.inj → Osmosis → allUSDC", who: "Keplr, Injective", chain: "injective-1", txChain: "injective-1", read: () => bankBalance("osmosis-1", W.osmo, K.ALL), what: "allUSDC", async run(amountIn, note, mark) {
+    const bal = await bankBalance("injective-1", W.inj, K.INJ_ERC20);
+    if (bal < BigInt(amountIn)) throw new Error(`Injective USDC.inj balance ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this stage expects`);
+    await assertChannel("injective-1", K.INJ_TO_OSMO, "osmosis-1");
+    const before = await bankBalance("osmosis-1", W.osmo, K.ALL);
+    const res = await skipRoute(K.INJ_ERC20, "injective-1", K.ALL, "osmosis-1", amountIn, { "injective-1": W.inj, "osmosis-1": W.osmo });
+    const v = validateInjToAll(res, { inj: W.inj, osmo: W.osmo, amountIn }); if (!v.ok) throw refused(v);
+    mark({ before: before.toString(), expected: v.amountOut });
+    if (!await confirmSheet({ title: "Sign on Injective", rows: [["You send", `${fmtUnits(amountIn)} USDC.inj`], ["Via", `IBC ${K.INJ_TO_OSMO} → Osmosis, hook swaps on pool ${K.POOL}`], ["Arrives as", `${fmtUnits(v.amountOut)} allUSDC`],
+      ["To", W.osmo], ["Hook contract", K.ENTRY_POINT], ["Estimated", `${v.secs || "?"} s`]] })) throw new Error("cancelled");
+    const hash = await signAndBroadcast("injective-1", W.inj, res.txs[0].cosmos_tx.msgs.map(skipMsgToAny), note, h => mark({ hash: h }));
+    note(`tx ${hash}`); await trackToCompletion("injective-1", hash, s => note("Skip: " + s));
+    return waitArrival(() => bankBalance("osmosis-1", W.osmo, K.ALL), before, v.amountOut, "allUSDC")
+      .catch(e => { throw new Error(e.message + ` A failed hook swap reverts the packet and refunds USDC.inj to ${W.inj}; reconnect and the page will offer to retry from that balance.`); });
+  } },
+  B4: { title: "Noble: USDC → Osmosis → allUSDC", who: "Keplr, Noble (fee is paid in USDC)", chain: "noble-1", txChain: "noble-1", read: () => bankBalance("osmosis-1", W.osmo, K.ALL), what: "allUSDC", async run(amountIn, note, mark) {
+    const bal = await bankBalance("noble-1", W.noble, "uusdc");
+    const reserve = 50000n;   // Noble's fee comes out of the same USDC balance: keep 0.05 back rather than sending it all
+    if (bal < BigInt(amountIn) + reserve) {
+      if (bal <= reserve) throw new Error(`Noble USDC balance ${fmtUnits(bal)} cannot cover the transfer and its fee`);
+      amountIn = (bal - reserve).toString(); note(`sending ${fmtUnits(amountIn)} so ${fmtUnits(reserve)} USDC stays for the fee`);
+    }
+    await assertChannel("noble-1", K.NOBLE_TO_OSMO, "osmosis-1");
+    const before = await bankBalance("osmosis-1", W.osmo, K.ALL);
+    const res = await skipRoute("uusdc", "noble-1", K.ALL, "osmosis-1", amountIn, { "noble-1": W.noble, "osmosis-1": W.osmo });
+    const v = validateNobleToAll(res, { noble: W.noble, osmo: W.osmo, amountIn }); if (!v.ok) throw refused(v);
+    mark({ before: before.toString(), expected: v.amountOut });
+    if (!await confirmSheet({ title: "Sign on Noble", rows: [["You send", `${fmtUnits(amountIn)} USDC`], ["Via", `IBC ${K.NOBLE_TO_OSMO} → Osmosis, hook swaps on pool ${K.POOL}`], ["Arrives as", `${fmtUnits(v.amountOut)} allUSDC`],
+      ["To", W.osmo], ["Hook contract", K.ENTRY_POINT], ["Estimated", `${v.secs || "?"} s`]] })) throw new Error("cancelled");
+    const hash = await signAndBroadcast("noble-1", W.noble, res.txs[0].cosmos_tx.msgs.map(skipMsgToAny), note, h => mark({ hash: h }));
+    note(`tx ${hash}`); await trackToCompletion("noble-1", hash, s => note("Skip: " + s));
+    return waitArrival(() => bankBalance("osmosis-1", W.osmo, K.ALL), before, v.amountOut, "allUSDC")
+      .catch(e => { throw new Error(e.message + ` A failed hook swap reverts the packet and refunds USDC to ${W.noble}; reconnect and the page will offer to retry from that balance.`); });
+  } },
+  B1: { title: "Osmosis: allUSDC → USDC.inj (pool 3497) → Injective", who: "Keplr, Osmosis (one tx, two messages, built here, not by Skip)", chain: null, txChain: "osmosis-1", read: () => bankBalance("injective-1", W.inj, K.INJ_ERC20), what: "Injective USDC.inj", async run(amountIn, note, mark) {
+    await assertChannel("osmosis-1", K.OSMO_TO_INJ, "injective-1");
+    const before = await bankBalance("injective-1", W.inj, K.INJ_ERC20);
+    mark({ before: before.toString(), expected: amountIn });
+    const timeout = ((BigInt(Date.now()) + 15n * 60n * 1000n) * 1000000n).toString();
+    const anys = [
+      Any("/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn", MsgSwapExactAmountIn({ sender: W.osmo, routes: [{ poolId: K.POOL, tokenOutDenom: K.INJ_IBC }],
+        tokenIn: { denom: K.ALL, amount: amountIn }, tokenOutMinAmount: amountIn })),   // 1:1 or the whole tx fails
+      Any("/ibc.applications.transfer.v1.MsgTransfer", MsgTransfer({ sourcePort: "transfer", sourceChannel: K.OSMO_TO_INJ, token: { denom: K.INJ_IBC, amount: amountIn },
+        sender: W.osmo, receiver: W.inj, timeoutHeight: {}, timeoutTimestamp: timeout, memo: "" })),
+    ];
+    if (!await confirmSheet({ title: "Sign on Osmosis", rows: [["Message 1", `swap ${fmtUnits(amountIn)} allUSDC → USDC.inj on pool ${K.POOL}, minimum out ${fmtUnits(amountIn)}`],
+      ["Message 2", `IBC ${fmtUnits(amountIn)} USDC.inj over ${K.OSMO_TO_INJ} to Injective`], ["To", W.inj], ["Atomic", "if either message fails nothing moves"], ["Timeout", "15 minutes, then refunded"]] })) throw new Error("cancelled");
+    const hash = await signAndBroadcast("osmosis-1", W.osmo, anys, note, h => mark({ hash: h }));
+    note(`tx ${hash}; waiting for the IBC relay`);
+    return waitArrival(() => bankBalance("injective-1", W.inj, K.INJ_ERC20), before, amountIn, "Injective USDC.inj");
+  } },
+};
+/* pair specs: one per alloy that has an Axelar variant and a Hub (Eureka) variant of the same Ethereum token */
+const SPEC_USDC = { alloy: K.ALL, pool: K.POOL, axl: K.AXL, token: K.HUB["1"].usdc, sym: "USDC", dec: 6, alloySym: "allUSDC" };
+const ethBal = spec => erc20BalanceOf("1", spec.token, W.evm);
+const ownSwap = (spec, denomOut, amountIn) => Any("/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn", MsgSwapExactAmountIn({ sender: W.osmo, routes: [{ poolId: spec.pool, tokenOutDenom: denomOut }],
+  tokenIn: { denom: spec.alloy, amount: amountIn }, tokenOutMinAmount: amountIn }));   // 1:1 or the whole tx fails
+const axlAddrs = () => ({ "osmosis-1": W.osmo, "axelar-dojo-1": bech32Rehrp(W.osmo, "axelar"), "1": W.evm });
+const hubAddrs = () => ({ "osmosis-1": W.osmo, "cosmoshub-4": W.hub, "1": W.evm });
+/* alloy -> Axelar variant (own swap) -> Axelar -> Ethereum token, one Osmosis tx */
+function axlUnwrapStage(spec) { return { title: () => `Osmosis: ${spec.alloySym} → ${symOf(spec.axl)} (pool ${spec.pool}) → Axelar → Ethereum ${spec.sym}`, who: "Keplr, Osmosis (one tx: the swap built here, the Axelar transfer from Skip)",
+  chain: "osmosis-1", txChain: "osmosis-1", read: () => ethBal(spec), what: `Ethereum ${spec.sym}`, async run(amountIn, note, mark) {
+  await assertChannel("osmosis-1", K.OSMO_TO_AXELAR, "axelar-dojo-1");
+  const before = await ethBal(spec);
+  const res = await skipRoute(spec.axl, "osmosis-1", spec.token, "1", amountIn, axlAddrs(), { bridges: ["AXELAR", "IBC"] });
+  const v = validateAxlUnwrapFor(res, { osmo: W.osmo, evm: W.evm, amountIn, denom: spec.axl, token: spec.token }); if (!v.ok) throw refused(v);
+  mark({ before: before.toString(), expected: v.amountOut });
+  const anys = [ownSwap(spec, spec.axl, amountIn), skipMsgToAny(res.txs[0].cosmos_tx.msgs[0])];
+  if (!await confirmSheet({ title: "Sign on Osmosis", rows: [["Message 1", `swap ${fmtUnits(amountIn, spec.dec)} ${spec.alloySym} → ${symOf(spec.axl)} on pool ${spec.pool}, minimum out ${fmtUnits(amountIn, spec.dec)}`],
+    ["Message 2", `IBC ${fmtUnits(amountIn, spec.dec)} ${symOf(spec.axl)} over ${K.OSMO_TO_AXELAR} to Axelar, forwarded to Ethereum`], ["Arrives as", `${fmtUnits(v.amountOut, spec.dec)} ${spec.sym} on Ethereum`], ["To", W.evm],
+    ["Axelar fee", `${fmtUnits(v.fee || "0", spec.dec)} ${spec.sym}, taken from the amount`], ["Atomic", "if either message fails nothing moves"], ["Estimated", `${v.secs || "?"} s`]] })) throw new Error("cancelled");
+  const hash = await signAndBroadcast("osmosis-1", W.osmo, anys, note, h => mark({ hash: h }));
+  note(`tx ${hash}`); await trackToCompletion("osmosis-1", hash, s => note("Skip: " + s));
+  return waitArrival(() => ethBal(spec), before, v.amountOut, `Ethereum ${spec.sym}`, 120, spec.dec);
+} }; }
+/* alloy -> Hub variant (own swap) -> Cosmos Hub -> Eureka -> Ethereum token, one Osmosis tx */
+function atomUnwrapStage(spec) { return { title: () => `Osmosis: ${spec.alloySym} → ${symOf(spec.atom)} (pool ${spec.pool}) → Cosmos Hub → Eureka → Ethereum ${spec.sym}`, who: "Keplr, Osmosis (one tx: the swap built here, the Hub transfer from Skip)",
+  chain: "osmosis-1", txChain: "osmosis-1", read: () => ethBal(spec), what: `Ethereum ${spec.sym}`, async run(amountIn, note, mark) {
+  await assertChannel("osmosis-1", K.OSMO_TO_HUB, "cosmoshub-4");
+  const before = await ethBal(spec);
+  const res = await skipRoute(spec.atom, "osmosis-1", spec.token, "1", amountIn, hubAddrs(), { experimental_features: ["eureka"], bridges: ["EUREKA", "IBC"] });
+  const v = validateAtomUnwrap(res, { osmo: W.osmo, hub: W.hub, evm: W.evm, amountIn, denom: spec.atom, token: spec.token }); if (!v.ok) throw refused(v);
+  mark({ before: before.toString(), expected: v.amountOut });
+  const anys = [ownSwap(spec, spec.atom, amountIn), skipMsgToAny(res.txs[0].cosmos_tx.msgs[0])];
+  if (!await confirmSheet({ title: "Sign on Osmosis", rows: [["Message 1", `swap ${fmtUnits(amountIn, spec.dec)} ${spec.alloySym} → ${symOf(spec.atom)} on pool ${spec.pool}, minimum out ${fmtUnits(amountIn, spec.dec)}`],
+    ["Message 2", `IBC ${fmtUnits(amountIn, spec.dec)} ${symOf(spec.atom)} over ${K.OSMO_TO_HUB} to the Cosmos Hub, forwarded over IBC Eureka to Ethereum`], ["Arrives as", `${fmtUnits(v.amountOut, spec.dec)} ${spec.sym} on Ethereum`], ["To", W.evm],
+    ["Eureka fee", `${fmtUnits(v.fee || "0", spec.dec)} ${spec.sym}, taken from the amount`], ["Atomic", "if either message fails nothing moves"], ["Estimated", `${v.secs || "?"} s`]] })) throw new Error("cancelled");
+  const hash = await signAndBroadcast("osmosis-1", W.osmo, anys, note, h => mark({ hash: h }));
+  note(`tx ${hash}`); await trackToCompletion("osmosis-1", hash, s => note("Skip: " + s));
+  return waitArrival(() => ethBal(spec), before, v.amountOut, `Ethereum ${spec.sym}`, 120, spec.dec);
+} }; }
+/* Ethereum token -> Axelar -> Osmosis Axelar variant -> alloy (swap on arrival), one Ethereum tx */
+function ethToAlloyAxelarStage(spec) { return { title: () => `Ethereum: ${spec.sym} → Axelar → Osmosis ${symOf(spec.axl)} → ${spec.alloySym}`, who: "Keplr EVM, Ethereum",
+  chain: "1", txChain: "1", read: () => bankBalance("osmosis-1", W.osmo, spec.alloy), what: spec.alloySym, async run(amountIn, note, mark) {
+  const bal = await ethBal(spec);
+  if (bal < BigInt(amountIn)) throw new Error(`Ethereum ${spec.sym} balance ${fmtUnits(bal, spec.dec)} is below the ${fmtUnits(amountIn, spec.dec)} this stage expects`);
+  const before = await bankBalance("osmosis-1", W.osmo, spec.alloy);
+  const res = await skipRoute(spec.token, "1", spec.alloy, "osmosis-1", amountIn, axlAddrs(), { bridges: ["AXELAR", "IBC"] });
+  const v = validateEthToAlloyAxelar(res, { evm: W.evm, osmo: W.osmo, amountIn, alloy: spec.alloy, pool: spec.pool, variant: spec.axl, token: spec.token, sym: spec.sym }); if (!v.ok) throw refused(v);
+  mark({ before: before.toString(), expected: v.amountOut });
+  const tx = res.txs[0].evm_tx;
+  if (!await confirmSheet({ title: "Sign on Ethereum", rows: [["You send", `${fmtUnits(amountIn, spec.dec)} ${spec.sym}`], ["Via", `Axelar GMP → Osmosis, swap ${symOf(spec.axl)} → ${spec.alloySym} on pool ${spec.pool} on arrival`], ["Arrives as", `${fmtUnits(v.amountOut, spec.dec)} ${spec.alloySym}`],
+    ["To", W.osmo], ["Receiver contract", tx.to], ["Relayer fee (native)", `${fmtUnits(v.value, 18)} ETH`], approvalRow(v, tx, spec.sym), ["Estimated", `${v.secs || "?"} s`]],
+    warn: "Ethereum gas applies to both prompts. Axelar delivery takes about 16 minutes." })) throw new Error("cancelled");
+  const hash = await sendSkipEvm("1", tx, v.approvals, note, h => mark({ hash: h }));
+  await trackToCompletion("1", hash, s => note("Skip: " + s));
+  return waitArrival(() => bankBalance("osmosis-1", W.osmo, spec.alloy), before, v.amountOut, spec.alloySym, 120, spec.dec)
+    .catch(e => { throw new Error(e.message + ` If the swap on arrival failed, Skip's recovery delivers ${symOf(spec.axl)} to ${W.osmo} on Osmosis instead; deposit it into pool ${spec.pool} by hand.`); });
+} }; }
+/* Ethereum token -> Eureka -> Cosmos Hub -> Osmosis Hub variant -> alloy (swap on arrival), one Ethereum tx */
+function ethToAlloyEurekaStage(spec) { return { title: () => `Ethereum: ${spec.sym} → Eureka → Cosmos Hub → Osmosis ${symOf(spec.atom)} → ${spec.alloySym}`, who: "Keplr EVM, Ethereum",
+  chain: "1", txChain: "1", read: () => bankBalance("osmosis-1", W.osmo, spec.alloy), what: spec.alloySym, async run(amountIn, note, mark) {
+  const bal = await ethBal(spec);
+  if (bal < BigInt(amountIn)) throw new Error(`Ethereum ${spec.sym} balance ${fmtUnits(bal, spec.dec)} is below the ${fmtUnits(amountIn, spec.dec)} this stage expects`);
+  const before = await bankBalance("osmosis-1", W.osmo, spec.alloy);
+  const res = await skipRoute(spec.token, "1", spec.alloy, "osmosis-1", amountIn, hubAddrs(), { experimental_features: ["eureka"], bridges: ["EUREKA", "IBC"] });
+  const v = validateEthToAlloyEureka(res, { evm: W.evm, osmo: W.osmo, hub: W.hub, amountIn, alloy: spec.alloy, pool: spec.pool, variant: spec.atom, token: spec.token }); if (!v.ok) throw refused(v);
+  mark({ before: before.toString(), expected: v.amountOut });
+  const tx = res.txs[0].evm_tx;
+  if (!await confirmSheet({ title: "Sign on Ethereum", rows: [["You send", `${fmtUnits(amountIn, spec.dec)} ${spec.sym}`], ["Via", `IBC Eureka → Cosmos Hub → Osmosis, swap ${symOf(spec.atom)} → ${spec.alloySym} on pool ${spec.pool} on arrival`], ["Arrives as", `${fmtUnits(v.amountOut, spec.dec)} ${spec.alloySym}`],
+    ["To", W.osmo], ["Eureka contract", tx.to], ["Eureka fee", `${fmtUnits(v.fee || "0", spec.dec)} ${spec.sym}, taken from the amount`], approvalRow(v, tx, spec.sym), ["Estimated", `${v.secs || "?"} s`]],
+    warn: "Ethereum gas applies to both prompts. Eureka delivery takes about 20 minutes." })) throw new Error("cancelled");
+  const hash = await sendSkipEvm("1", tx, v.approvals, note, h => mark({ hash: h }));
+  await trackToCompletion("1", hash, s => note("Skip: " + s));
+  return waitArrival(() => bankBalance("osmosis-1", W.osmo, spec.alloy), before, v.amountOut, spec.alloySym, 120, spec.dec)
+    .catch(e => { throw new Error(e.message + ` If the swap on arrival failed, Skip's recovery delivers ${symOf(spec.atom)} to ${W.osmo} on Osmosis instead; deposit it into pool ${spec.pool} by hand.`); });
+} }; }
+/* Peggy legs for USDT.eth.inj. None of these asks Skip for anything: every message is built here from pinned constants. */
+const PG = K.PEGGY_PAIR;
+const pgAlloy = () => { const a = K.ALLOYS.find(x => x.sym === PG.alloySym); return { alloy: `factory/${a.contract}/alloyed/${PG.alloySym}`, pool: a.pool }; };
+const injPeggyBal = () => bankBalance("injective-1", W.inj, PG.injDenom);
+/* alloy -> USDT.eth.inj (own swap) -> IBC to your Injective address, one Osmosis tx */
+STAGE.P1 = { title: `Osmosis: allUSDT → USDT.eth.inj (pool ${pgAlloy().pool}) → Injective`, who: "Keplr, Osmosis (one tx, two messages, built here)", chain: null, txChain: "osmosis-1", read: injPeggyBal, what: "Injective Peggy USDT", async run(amountIn, note, mark) {
+  const { alloy, pool } = pgAlloy();
+  await assertChannel("osmosis-1", K.OSMO_TO_INJ, "injective-1");
+  const before = await injPeggyBal();
+  mark({ before: before.toString(), expected: amountIn });
+  const timeout = ((BigInt(Date.now()) + 15n * 60n * 1000n) * 1000000n).toString();
+  const anys = [
+    Any("/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn", MsgSwapExactAmountIn({ sender: W.osmo, routes: [{ poolId: pool, tokenOutDenom: PG.inj }], tokenIn: { denom: alloy, amount: amountIn }, tokenOutMinAmount: amountIn })),
+    Any("/ibc.applications.transfer.v1.MsgTransfer", MsgTransfer({ sourcePort: "transfer", sourceChannel: K.OSMO_TO_INJ, token: { denom: PG.inj, amount: amountIn }, sender: W.osmo, receiver: W.inj, timeoutHeight: {}, timeoutTimestamp: timeout, memo: "" })),
+  ];
+  if (!await confirmSheet({ title: "Sign on Osmosis", rows: [["Message 1", `swap ${fmtUnits(amountIn, PG.dec)} allUSDT → USDT.eth.inj on pool ${pool}, minimum out ${fmtUnits(amountIn, PG.dec)}`],
+    ["Message 2", `IBC ${fmtUnits(amountIn, PG.dec)} USDT.eth.inj over ${K.OSMO_TO_INJ} to Injective`], ["To", W.inj], ["Atomic", "if either message fails nothing moves"], ["Timeout", "15 minutes, then refunded"]] })) throw new Error("cancelled");
+  const hash = await signAndBroadcast("osmosis-1", W.osmo, anys, note, h => mark({ hash: h }));
+  note(`tx ${hash}; waiting for the IBC relay`);
+  return waitArrival(injPeggyBal, before, amountIn, "Injective Peggy USDT");
+} };
+/* Injective -> Ethereum over Peggy: MsgSendToEth to your EVM address; relayers batch withdrawals once the bridge fee makes it worth it */
+STAGE.P2 = { title: "Injective: USDT → Peggy → Ethereum USDT", who: "Keplr, Injective (bridge fee about 5 USDT, taken from the amount)", chain: null, txChain: "injective-1", read: () => erc20BalanceOf("1", PG.token, W.evm), what: "Ethereum USDT", async run(amountIn, note, mark) {
+  const fee = BigInt(K.PEGGY_BRIDGE_FEE_USDT), send = BigInt(amountIn) - fee;
+  if (send <= 0n) throw new Error(`amount ${fmtUnits(amountIn, PG.dec)} does not cover the ${fmtUnits(fee.toString(), PG.dec)} USDT Peggy bridge fee`);
+  const bal = await injPeggyBal();
+  if (bal < BigInt(amountIn)) throw new Error(`Injective USDT balance ${fmtUnits(bal, PG.dec)} is below the ${fmtUnits(amountIn, PG.dec)} this stage expects`);
+  const before = await erc20BalanceOf("1", PG.token, W.evm);
+  mark({ before: before.toString(), expected: send.toString() });
+  const anys = [Any("/injective.peggy.v1.MsgSendToEth", MsgSendToEth({ sender: W.inj, ethDest: W.evm, amount: { denom: PG.injDenom, amount: send.toString() }, bridgeFee: { denom: PG.injDenom, amount: fee.toString() } }))];
+  if (!await confirmSheet({ title: "Sign on Injective", rows: [["You send", `${fmtUnits(send.toString(), PG.dec)} USDT to Ethereum`], ["Bridge fee", `${fmtUnits(fee.toString(), PG.dec)} USDT to the Peggy relayers`], ["To", W.evm], ["Via", `Injective Peggy → ${K.PEGGY_ETH}`], ["Estimated", "batched by relayers; typically minutes, can be an hour or more"]],
+    warn: "Peggy withdrawals leave Injective in relayer batches. The page waits up to 90 minutes for the USDT to appear on Ethereum; if it takes longer, reload later and Continue, nothing will be re-signed." })) throw new Error("cancelled");
+  const hash = await signAndBroadcast("injective-1", W.inj, anys, note, h => mark({ hash: h }));
+  note(`tx ${hash}; waiting for the Peggy batch to be relayed to Ethereum`);
+  return waitArrival(() => erc20BalanceOf("1", PG.token, W.evm), before, send.toString(), "Ethereum USDT", 1080);
+} };
+/* Ethereum -> Injective over Peggy: approve the Peggy contract, then sendToInjective with your Injective account as destination */
+STAGE.P3 = { title: "Ethereum: USDT → Peggy → Injective", who: "Keplr EVM, Ethereum", chain: null, txChain: "1", read: injPeggyBal, what: "Injective Peggy USDT", async run(amountIn, note, mark) {
+  const bal = await erc20BalanceOf("1", PG.token, W.evm);
+  if (bal < BigInt(amountIn)) throw new Error(`Ethereum USDT balance ${fmtUnits(bal, PG.dec)} is below the ${fmtUnits(amountIn, PG.dec)} this stage expects`);
+  const before = await injPeggyBal();
+  mark({ before: before.toString(), expected: amountIn });
+  const data = peggySendCalldata(PG.token, W.injHex, amountIn);
+  if (!await confirmSheet({ title: "Sign on Ethereum", rows: [["You send", `${fmtUnits(amountIn, PG.dec)} USDT`], ["Via", `Peggy contract ${K.PEGGY_ETH}, sendToInjective`], ["To (your Injective account)", `${W.inj} = ${W.injHex}`], ["Approval", `${fmtUnits(amountIn, PG.dec)} USDT to the Peggy contract`], ["Estimated", "about 20 minutes (Ethereum finality, then Injective attestation)"]],
+    warn: "Two prompts: the exact-amount approval, then the deposit. Ethereum gas applies to both." })) throw new Error("cancelled");
+  const hash = await sendSkipEvm("1", { to: K.PEGGY_ETH, data, value: "0" }, [{ token_contract: PG.token, spender: K.PEGGY_ETH, amount: amountIn }], note, h => mark({ hash: h }));
+  note(`tx ${hash}; waiting for Injective to attest the deposit`);
+  return waitArrival(injPeggyBal, before, amountIn, "Injective Peggy USDT", 360);
+} };
+/* Injective -> Osmosis plain IBC to your own address (Skip has no hook route for Peggy USDT), then the deposit swap is its own stage */
+STAGE.P4 = { title: "Injective: USDT.eth.inj → Osmosis", who: "Keplr, Injective", chain: null, txChain: "injective-1", read: () => bankBalance("osmosis-1", W.osmo, PG.inj), what: "Osmosis USDT.eth.inj", async run(amountIn, note, mark) {
+  const bal = await injPeggyBal();
+  if (bal < BigInt(amountIn)) throw new Error(`Injective USDT balance ${fmtUnits(bal, PG.dec)} is below the ${fmtUnits(amountIn, PG.dec)} this stage expects`);
+  await assertChannel("injective-1", K.INJ_TO_OSMO, "osmosis-1");
+  const before = await bankBalance("osmosis-1", W.osmo, PG.inj);
+  mark({ before: before.toString(), expected: amountIn });
+  const timeout = ((BigInt(Date.now()) + 15n * 60n * 1000n) * 1000000n).toString();
+  const anys = [Any("/ibc.applications.transfer.v1.MsgTransfer", MsgTransfer({ sourcePort: "transfer", sourceChannel: K.INJ_TO_OSMO, token: { denom: PG.injDenom, amount: amountIn }, sender: W.inj, receiver: W.osmo, timeoutHeight: {}, timeoutTimestamp: timeout, memo: "" }))];
+  if (!await confirmSheet({ title: "Sign on Injective", rows: [["You send", `${fmtUnits(amountIn, PG.dec)} USDT over IBC ${K.INJ_TO_OSMO}`], ["To", W.osmo], ["Arrives as", "USDT.eth.inj on Osmosis"], ["Timeout", "15 minutes, then refunded"]] })) throw new Error("cancelled");
+  const hash = await signAndBroadcast("injective-1", W.inj, anys, note, h => mark({ hash: h }));
+  note(`tx ${hash}; waiting for the IBC relay`);
+  return waitArrival(() => bankBalance("osmosis-1", W.osmo, PG.inj), before, amountIn, "Osmosis USDT.eth.inj");
+} };
+/* the deposit: USDT.eth.inj -> allUSDT on the alloy pool, 1:1 or nothing */
+STAGE.P5 = { title: `Osmosis: USDT.eth.inj → allUSDT (pool ${pgAlloy().pool})`, who: "Keplr, Osmosis", chain: null, txChain: "osmosis-1", read: () => bankBalance("osmosis-1", W.osmo, pgAlloy().alloy), what: "allUSDT", async run(amountIn, note, mark) {
+  const { alloy, pool } = pgAlloy();
+  const bal = await bankBalance("osmosis-1", W.osmo, PG.inj);
+  if (bal < BigInt(amountIn)) throw new Error(`USDT.eth.inj balance ${fmtUnits(bal, PG.dec)} is below the ${fmtUnits(amountIn, PG.dec)} this stage expects`);
+  const before = await bankBalance("osmosis-1", W.osmo, alloy);
+  mark({ before: before.toString(), expected: amountIn });
+  const anys = [Any("/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn", MsgSwapExactAmountIn({ sender: W.osmo, routes: [{ poolId: pool, tokenOutDenom: alloy }], tokenIn: { denom: PG.inj, amount: amountIn }, tokenOutMinAmount: amountIn }))];
+  if (!await confirmSheet({ title: "Sign on Osmosis", rows: [["Swap", `${fmtUnits(amountIn, PG.dec)} USDT.eth.inj → allUSDT on pool ${pool}`], ["Minimum out", `${fmtUnits(amountIn, PG.dec)} allUSDT (1:1 or the tx fails)`]] })) throw new Error("cancelled");
+  const hash = await signAndBroadcast("osmosis-1", W.osmo, anys, note, h => mark({ hash: h }));
+  note(`tx ${hash}`);
+  return waitArrival(() => bankBalance("osmosis-1", W.osmo, alloy), before, amountIn, "allUSDT", 24);
+} };
+/* Alloyed BTC: WBTC.eth.axl (or WBTC.eth.atom) <-> nBTC through Ethereum WBTC, Chainflip and Nomic */
+const btcAlloy = () => { const a = K.ALLOYS.find(x => x.sym === "allBTC"); return { alloy: `factory/${a.contract}/alloyed/allBTC`, pool: a.pool }; };
+const WBTC = () => K.ETH_PAIRS.allBTC;
+const nbtcBal = () => bankBalance("osmosis-1", W.osmo, K.NBTC);
+const SATS_TO_NBTC = 1000000n;   // nBTC has 14 decimals, BTC 8
+/* Ethereum WBTC -> Chainflip -> BTC paid straight into a fresh Nomic deposit address -> nBTC on Osmosis (Nomic IBC-delivers it) */
+STAGE.N2 = { title: "Ethereum: WBTC → Chainflip → BTC → Nomic deposit → nBTC on Osmosis", who: "Keplr EVM, Ethereum (one ERC20 transfer to the Chainflip channel)", chain: null, txChain: "1", inDec: 8, outDec: 14, read: nbtcBal, what: "nBTC on Osmosis", async run(amountIn, note, mark) {
+  const bal = await erc20BalanceOf("1", WBTC().token, W.evm);
+  if (bal < BigInt(amountIn)) throw new Error(`Ethereum WBTC balance ${fmtUnits(bal, 8)} is below the ${fmtUnits(amountIn, 8)} this stage expects`);
+  const before = await nbtcBal();
+  // 1. a Nomic deposit address committing to "mint nBTC and IBC it to my Osmosis address", acknowledged by every relayer
+  await assertChannel("osmosis-1", K.OSMO_TO_NOMIC, "nomic-stakenet-3");
+  const sigset = await nomicSigsetConsensus();
+  const now = Date.now();
+  const dest = { sourcePort: "transfer", sourceChannel: K.NOMIC_TO_OSMO, receiver: W.osmo, sender: bech32Rehrp(W.osmo, "nomic"), memo: "", timeoutTimestamp: (BigInt(now + 5 * 86400 * 1000 - (now % 3600000)) * 1000000n).toString() };
+  const { address: nomicAddr, broadcastBytes } = await nomicDepositAddress(sigset, dest);
+  const acks = await nomicBroadcastAddress(nomicAddr, sigset.index, broadcastBytes);
+  note(`Nomic deposit address ${nomicAddr} (signatory set ${sigset.index}, ${acks}/${K.NOMIC_RELAYERS.length} relayers acknowledged, expires in 5 days)`);
+  const feeRate = sigset.bridgeFeeOverrides?.ibc?.[K.NOMIC_TO_OSMO] ?? sigset.bridgeFeeRate;
+  // 2. a Chainflip channel WBTC -> BTC that pays that address; refunds come back to you on Ethereum
+  const src = { chain: "Ethereum", asset: "WBTC" }, dst = { chain: "Bitcoin", asset: "BTC" };
+  const q = await chainflipQuote(src, dst, amountIn);
+  const ch = await chainflipOpenChannel(src, dst, amountIn, nomicAddr, W.evm, q, 8, 8);
+  const egress = BigInt(q.egressAmount), expectedNbtc = (egress * BigInt(Math.round((1 - Number(feeRate)) * 1000000)) / 1000000n - 2000n) * SATS_TO_NBTC;   // Nomic fee rate, minus a miner-fee allowance
+  mark({ before: before.toString(), expected: expectedNbtc.toString(), nomicAddr, chainflipId: ch.id });
+  if (!await confirmSheet({ title: "Sign on Ethereum", rows: [["You send", `${fmtUnits(amountIn, 8)} WBTC to the Chainflip channel`], ["Channel deposit address", ch.depositAddress], ["Chainflip pays", `≈ ${fmtUnits(q.egressAmount, 8)} BTC to the Nomic deposit address`], ["Nomic deposit address", nomicAddr],
+    ["Then", `Nomic mints nBTC (bridge fee ${(Number(feeRate) * 100).toFixed(2)}% plus miner fee) and IBC-delivers it to ${W.osmo}`], ["Arrives as", `≈ ${fmtUnits(expectedNbtc.toString(), 14)} nBTC`], ["Chainflip fees", q.includedFees.map(f => `${f.type} ${f.amount} ${f.asset}`).join(", ")], ["Refund address", `${W.evm} (Ethereum) if the swap cannot fill within ${K.CHAINFLIP_RETRY_BLOCKS} blocks`],
+    ["Channel expires", new Date(ch.estimatedExpiryTime).toLocaleString()], ["Estimated", `Chainflip ${q.estimatedDurationSeconds}s, then Bitcoin confirmations for Nomic (about an hour)`]],
+    warn: "Chainflip's price is a market swap with slippage, not 1:1. Do not send anything else to either address." })) throw new Error("cancelled");
+  // 3. plain ERC20 transfer of WBTC to the channel
+  const data = "0x" + K.ERC20_TRANSFER_SELECTOR + pad32(ch.depositAddress) + BigInt(amountIn).toString(16).padStart(64, "0");
+  const hash = await evmSend("1", { to: WBTC().token, data, value: "0x0" });
+  mark({ hash }); note(`sent ${hash}, waiting for receipt`); await waitReceipt("1", hash);
+  await chainflipWait(ch.id, m => note(m));
+  note("BTC sent to the Nomic deposit address; waiting for Nomic to mint and deliver nBTC (Bitcoin confirmations)");
+  return waitArrival(nbtcBal, before, expectedNbtc.toString(), "nBTC on Osmosis", 2160, 14);
+} };
+/* nBTC -> allBTC on the pool, 1:1 or nothing */
+STAGE.N3 = { title: `Osmosis: nBTC → allBTC (pool ${btcAlloy().pool})`, who: "Keplr, Osmosis", chain: null, txChain: "osmosis-1", inDec: 14, outDec: 8, read: () => bankBalance("osmosis-1", W.osmo, btcAlloy().alloy), what: "allBTC", async run(amountIn, note, mark) {
+  const { alloy, pool } = btcAlloy();
+  const bal = await nbtcBal(); if (bal < BigInt(amountIn)) amountIn = bal.toString();   // deposit whatever actually arrived
+  if (BigInt(amountIn) <= 0n) throw new Error("no nBTC to deposit");
+  const before = await bankBalance("osmosis-1", W.osmo, alloy);
+  // allBTC has 8 decimals and nBTC 14: the transmuter normalises by 1e6, so 1:1 in BTC terms
+  const minOut = (BigInt(amountIn) / SATS_TO_NBTC).toString();
+  mark({ before: before.toString(), expected: minOut, amountIn });
+  const anys = [Any("/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn", MsgSwapExactAmountIn({ sender: W.osmo, routes: [{ poolId: pool, tokenOutDenom: alloy }], tokenIn: { denom: K.NBTC, amount: amountIn }, tokenOutMinAmount: minOut }))];
+  if (!await confirmSheet({ title: "Sign on Osmosis", rows: [["Swap", `${fmtUnits(amountIn, 14)} nBTC → allBTC on pool ${pool}`], ["Minimum out", `${fmtUnits(minOut, 8)} allBTC (1:1 in BTC terms or the tx fails)`]] })) throw new Error("cancelled");
+  const hash = await signAndBroadcast("osmosis-1", W.osmo, anys, note, h => mark({ hash: h }));
+  note(`tx ${hash}`);
+  return waitArrival(() => bankBalance("osmosis-1", W.osmo, alloy), before, minOut, "allBTC", 24, 8);
+} };
+/* allBTC -> nBTC (own swap) -> IBC to Nomic with a withdrawal memo -> BTC at your Keplr Bitcoin address */
+STAGE.M1 = { title: `Osmosis: allBTC → nBTC (pool ${btcAlloy().pool}) → Nomic → withdraw to your Bitcoin address`, who: "Keplr, Osmosis (one tx, two messages, built here)", chain: null, txChain: "osmosis-1", read: () => btcBalance(W.btc), what: "BTC at your Keplr address", async run(amountIn, note, mark) {
+  if (!W.btc) throw new Error("Keplr Bitcoin is not connected");
+  const { alloy, pool } = btcAlloy();
+  await assertChannel("osmosis-1", K.OSMO_TO_NOMIC, "nomic-stakenet-3");
+  const before = await btcBalance(W.btc);
+  const nbtcOut = (BigInt(amountIn) * SATS_TO_NBTC).toString();          // allBTC (8) -> nBTC (14), 1:1 in BTC terms
+  mark({ before: before.toString(), expected: (BigInt(amountIn) * 97n / 100n).toString() });   // Nomic's withdrawal takes miner fees; 3% allowance
+  const timeout = ((BigInt(Date.now()) + 60n * 60n * 1000n) * 1000000n).toString();
+  const anys = [
+    Any("/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn", MsgSwapExactAmountIn({ sender: W.osmo, routes: [{ poolId: pool, tokenOutDenom: K.NBTC }], tokenIn: { denom: alloy, amount: amountIn }, tokenOutMinAmount: nbtcOut })),
+    Any("/ibc.applications.transfer.v1.MsgTransfer", MsgTransfer({ sourcePort: "transfer", sourceChannel: K.OSMO_TO_NOMIC, token: { denom: K.NBTC, amount: nbtcOut }, sender: W.osmo, receiver: bech32Rehrp(W.osmo, "nomic"), timeoutHeight: {}, timeoutTimestamp: timeout, memo: nomicWithdrawMemo(W.btc) })),
+  ];
+  if (!await confirmSheet({ title: "Sign on Osmosis", rows: [["Message 1", `swap ${fmtUnits(amountIn, 8)} allBTC → nBTC on pool ${pool}, minimum out ${fmtUnits(nbtcOut, 14)}`], ["Message 2", `IBC ${fmtUnits(nbtcOut, 14)} nBTC over ${K.OSMO_TO_NOMIC} to Nomic with a withdrawal memo`],
+    ["Withdraw to", `${W.btc} (your Keplr Bitcoin address)`], ["Atomic", "if either message fails nothing moves"], ["Estimated", "next Nomic checkpoint plus Bitcoin confirmations; can be hours"]],
+    warn: "Nomic pays out in its periodic checkpoint transaction, minus Bitcoin miner fees. The page waits up to 4 hours; if it takes longer, reload later and Continue." })) throw new Error("cancelled");
+  const hash = await signAndBroadcast("osmosis-1", W.osmo, anys, note, h => mark({ hash: h }));
+  note(`tx ${hash}; waiting for Nomic's checkpoint and Bitcoin confirmations`);
+  return waitArrival(() => btcBalance(W.btc), before, (BigInt(amountIn) * 97n / 100n).toString(), "BTC at your Keplr address", 2880, 8);
+} };
+/* BTC -> Chainflip -> WBTC to your Ethereum address, sent from Keplr Bitcoin */
+STAGE.M2 = { title: "Bitcoin: BTC → Chainflip → Ethereum WBTC", who: "Keplr Bitcoin", chain: null, txChain: "bitcoin", read: () => erc20BalanceOf("1", WBTC().token, W.evm), what: "Ethereum WBTC", async run(amountIn, note, mark) {
+  if (!W.btc) throw new Error("Keplr Bitcoin is not connected");
+  const bal = await btcBalance(W.btc);
+  const sats = BigInt(amountIn) - 5000n;   // leave room for the Bitcoin miner fee Keplr adds on top
+  if (bal < sats + 5000n || sats <= 0n) throw new Error(`Keplr Bitcoin balance ${fmtUnits(bal, 8)} BTC cannot send ${fmtUnits(amountIn, 8)} plus miner fee`);
+  const before = await erc20BalanceOf("1", WBTC().token, W.evm);
+  const src = { chain: "Bitcoin", asset: "BTC" }, dst = { chain: "Ethereum", asset: "WBTC" };
+  const q = await chainflipQuote(src, dst, sats.toString());
+  const ch = await chainflipOpenChannel(src, dst, sats.toString(), W.evm, W.btc, q, 8, 8);
+  mark({ before: before.toString(), expected: q.egressAmount, chainflipId: ch.id });
+  if (!await confirmSheet({ title: "Send from Keplr Bitcoin", rows: [["You send", `${fmtUnits(sats.toString(), 8)} BTC to the Chainflip channel`], ["Channel deposit address", ch.depositAddress], ["Chainflip pays", `≈ ${fmtUnits(q.egressAmount, 8)} WBTC`], ["To", `${W.evm} (Ethereum)`],
+    ["Chainflip fees", q.includedFees.map(f => `${f.type} ${f.amount} ${f.asset}`).join(", ")], ["Refund address", `${W.btc} if the swap cannot fill within ${K.CHAINFLIP_RETRY_BLOCKS} blocks`], ["Channel expires", new Date(ch.estimatedExpiryTime).toLocaleString()], ["Estimated", `${q.estimatedDurationSeconds}s after Bitcoin confirmations`]],
+    warn: "Chainflip's price is a market swap with slippage, not 1:1. Keplr will ask you to confirm the Bitcoin transaction." })) throw new Error("cancelled");
+  const txid = await btcKeplr().sendBitcoin(ch.depositAddress, Number(sats));
+  mark({ hash: txid }); note(`bitcoin tx ${txid}`);
+  await chainflipWait(ch.id, m => note(m));
+  return waitArrival(() => erc20BalanceOf("1", WBTC().token, W.evm), before, q.egressAmount, "Ethereum WBTC", 360, 8);
+} };
+STAGE.D1 = axlUnwrapStage(SPEC_USDC);
+STAGE.E2 = ethToAlloyAxelarStage(SPEC_USDC);
+/* the three Axelar <-> Eureka alloys get four stages each */
+const PAIR_SPECS = {};
+for (const [sym, pr] of Object.entries(K.ETH_PAIRS)) {
+  const a = K.ALLOYS.find(x => x.sym === sym); const alloy = `factory/${a.contract}/alloyed/${sym}`;
+  const spec = { alloy, pool: a.pool, axl: pr.axl, atom: pr.atom, token: pr.token, sym: pr.sym, dec: pr.dec, alloySym: sym };
+  PAIR_SPECS[alloy] = spec;
+  STAGE[`X1_${sym}`] = axlUnwrapStage(spec);  STAGE[`X2_${sym}`] = ethToAlloyEurekaStage(spec);
+  STAGE[`Y1_${sym}`] = atomUnwrapStage(spec); STAGE[`Y2_${sym}`] = ethToAlloyAxelarStage(spec);
+}
+/* Direction plans. USDC plans keep their original keys; other alloys are keyed "<alloySym>:axl>atom" etc. Each names the alloy
+   and the denoms it reduces and increases; `parked` says which stage picks up funds found sitting on a hub or on Injective/Noble. */
+const PLANS = {
+  "noble>inj":   { alloy: K.ALL, reduce: K.NOBLE, increase: K.INJ_IBC, stages: ["A1", "A2", "A3"],       sigs: 3, mins: 5,  parked: { avax: "A2", inj: "A3" } },
+  "inj>noble":   { alloy: K.ALL, reduce: K.INJ_IBC, increase: K.NOBLE, stages: ["B1", "B2", "B3", "B4"], sigs: 4, mins: 7,  parked: { inj: "B2", avax: "B3", noble: "B4" } },
+  "noble>axl":   { alloy: K.ALL, reduce: K.NOBLE, increase: K.AXL,     stages: ["E1", "E2"],             sigs: 2, mins: 22, parked: { eth: "E2" } },
+  "inj>axl":     { alloy: K.ALL, reduce: K.INJ_IBC, increase: K.AXL,   stages: ["B1", "C2", "E2"],       sigs: 3, mins: 22, parked: { inj: "C2", eth: "E2" } },
+  "axl>noble":   { alloy: K.ALL, reduce: K.AXL, increase: K.NOBLE,     stages: ["D1", "D2", "B4"],       sigs: 3, mins: 26, parked: { eth: "D2", noble: "B4" } },
+  "axl>inj":     { alloy: K.ALL, reduce: K.AXL, increase: K.INJ_IBC,   stages: ["D1", "C3", "A3"],       sigs: 3, mins: 26, parked: { eth: "C3", inj: "A3" } },
+};
+for (const [alloy, spec] of Object.entries(PAIR_SPECS)) {
+  PLANS[`${spec.alloySym}:axl>atom`] = { alloy, reduce: spec.axl, increase: spec.atom, stages: [`X1_${spec.alloySym}`, `X2_${spec.alloySym}`], sigs: 2, mins: 26, parked: { eth: `X2_${spec.alloySym}` } };
+  PLANS[`${spec.alloySym}:atom>axl`] = { alloy, reduce: spec.atom, increase: spec.axl, stages: [`Y1_${spec.alloySym}`, `Y2_${spec.alloySym}`], sigs: 2, mins: 20, parked: { eth: `Y2_${spec.alloySym}` } };
+}
+{
+  const usdt = PAIR_SPECS[pgAlloy().alloy];
+  if (usdt) {
+    /* experimental: Injective's Peggy bridge has not been exercised from this page; capped at 200 USDT until it has */
+    const px = { experimental: "Injective Peggy (MsgSendToEth / sendToInjective) and the ~5 USDT relayer fee have not been exercised from this page", maxAmount: "200000000" };
+    PLANS["allUSDT:inj>axl"]  = { alloy: usdt.alloy, reduce: PG.inj, increase: usdt.axl,  stages: ["P1", "P2", "Y2_allUSDT"], sigs: 3, mins: 45, parked: { inj: "P2", eth: "Y2_allUSDT" }, ...px };
+    PLANS["allUSDT:inj>atom"] = { alloy: usdt.alloy, reduce: PG.inj, increase: usdt.atom, stages: ["P1", "P2", "X2_allUSDT"], sigs: 3, mins: 50, parked: { inj: "P2", eth: "X2_allUSDT" }, ...px };
+    PLANS["allUSDT:axl>inj"]  = { alloy: usdt.alloy, reduce: usdt.axl,  increase: PG.inj, stages: ["X1_allUSDT", "P3", "P4", "P5"], sigs: 4, mins: 35, parked: { eth: "P3", inj: "P4", osmoVariant: "P5" }, ...px };
+    PLANS["allUSDT:atom>inj"] = { alloy: usdt.alloy, reduce: usdt.atom, increase: PG.inj, stages: ["Y1_allUSDT", "P3", "P4", "P5"], sigs: 4, mins: 35, parked: { eth: "P3", inj: "P4", osmoVariant: "P5" }, ...px };
+  }
+}
+{
+  const b = PAIR_SPECS[btcAlloy().alloy];
+  if (b) {
+    /* experimental: Nomic deposits/withdrawals and Chainflip channels have not been exercised from this page; the open
+       assumptions (taproot payouts, Nomic minimums, timings) are in the README. Capped at 0.005 BTC until confirmed. */
+    const nx = { experimental: "Nomic deposit addresses, Nomic withdrawals to a taproot address and Chainflip channels have not been exercised from this page", maxAmount: "500000" };
+    PLANS["allBTC:axl>nbtc"]  = { alloy: b.alloy, reduce: b.axl,  increase: K.NBTC, stages: ["X1_allBTC", "N2", "N3"], sigs: 3, mins: 90,  parked: { eth: "N2", osmoVariant: "N3" }, needsBtc: false, ...nx };
+    PLANS["allBTC:atom>nbtc"] = { alloy: b.alloy, reduce: b.atom, increase: K.NBTC, stages: ["Y1_allBTC", "N2", "N3"], sigs: 3, mins: 90,  parked: { eth: "N2", osmoVariant: "N3" }, needsBtc: false, ...nx };
+    PLANS["allBTC:nbtc>axl"]  = { alloy: b.alloy, reduce: K.NBTC, increase: b.axl,  stages: ["M1", "M2", "Y2_allBTC"], sigs: 3, mins: 240, parked: { btc: "M2", eth: "Y2_allBTC" }, needsBtc: true, ...nx };
+    PLANS["allBTC:nbtc>atom"] = { alloy: b.alloy, reduce: K.NBTC, increase: b.atom, stages: ["M1", "M2", "X2_allBTC"], sigs: 3, mins: 240, parked: { btc: "M2", eth: "X2_allBTC" }, needsBtc: true, ...nx };
+  }
+}
+/* the Ethereum token the selected alloy's plans move through, for the Status table and stranded-funds detection */
+const ethTokenOf = alloy => alloy === K.ALL ? { token: K.HUB["1"].usdc, sym: "USDC", dec: 6 } : PAIR_SPECS[alloy] ? { token: PAIR_SPECS[alloy].token, sym: PAIR_SPECS[alloy].sym, dec: PAIR_SPECS[alloy].dec } : null;
+
+/* ---------------- cycle state (persisted so a reload mid-flight resumes) ---------------- */
+let CYCLE = null, BUSY = false;
+function saveCycle() { if (CYCLE) localStorage.setItem(K.STORE, JSON.stringify(CYCLE)); else localStorage.removeItem(K.STORE); }
+function loadCycle() { try { CYCLE = JSON.parse(localStorage.getItem(K.STORE) || "null"); } catch { CYCLE = null; } }
+function planOf(c) { return PLANS[c?.plan]; }
+function renderSteps() {
+  const c = CYCLE, plan = planOf(c);
+  $("steps").innerHTML = !plan ? "" : plan.stages.map((key, i) => {
+    const st = c.stages[key] || {}, active = c.idx === i;
+    const cls = st.state === "done" ? "done" : st.state === "failed" ? "failed" : active ? "active" : "";
+    const badge = st.state === "done" ? "done" : st.state === "failed" ? "failed" : active ? (BUSY ? "running" : st.hash ? "in flight" : "next") : c.idx < i ? "waiting" : "";
+    const lines = [];
+    if (st.hash && st.state !== "done") lines.push(`tx ${st.hash}${BUSY ? "" : " sent; press Continue to resume waiting for arrival (nothing will be signed again)"}`);
+    const inDec = S.inDec ?? decOf(plan.alloy), outDec = S.outDec ?? decOf(plan.alloy);
+    if (st.amountIn) lines.push(`in ${fmtUnits(st.amountIn, inDec)}` + (st.received ? ` → received ${fmtUnits(st.received, outDec)}` : ""));
+    if (st.note) lines.push(st.note);
+    const S = STAGE[key], title = typeof S.title === "function" ? S.title() : S.title;
+    return `<li class="step ${cls}"><h3><span>${i + 1}. ${esc(title)}</span><span class="badge">${badge}</span></h3><div class="detail">${esc(STAGE[key].who)}${lines.length ? "<br>" + lines.map(esc).join("<br>") : ""}</div></li>`;
+  }).join("");
+  const live = c && plan && c.idx < plan.stages.length;
+  $("abandon").style.display = live ? "" : "none";
+  $("cycleBox").innerHTML = !c ? "" : live
+    ? `<div class="warnbox">Cycle in progress: ${esc(symOf(plan.reduce))} → ${esc(symOf(plan.increase))}, started ${new Date(c.startedAt).toLocaleString()}. Do not start another until this one finishes; funds are in flight.</div>`
+    : `<div class="okbox">Cycle complete: ${fmtUnits(c.amountIn, decOf(plan.alloy))} ${esc(ALLOYS[plan.alloy]?.sym || "")} left the pool as ${esc(symOf(plan.reduce))} and ${c.finalReceived ? fmtUnits(c.finalReceived, decOf(plan.alloy)) : "?"} came back as ${esc(symOf(plan.increase))}.</div>`;
+  if (live) { if (ALLOY !== plan.alloy && ALLOYS[plan.alloy]) { ALLOY = plan.alloy; $("alloy").value = plan.alloy; refreshPool(); } $("reduce").value = plan.reduce; $("increase").value = plan.increase; $("freeExit").checked = !!c.freeExit; }
+  $("reduce").disabled = $("increase").disabled = $("amount").disabled = $("alloy").disabled = !!live;
+  syncStart();
+}
+function setStage(key, patch) { CYCLE.stages[key] = { ...(CYCLE.stages[key] || {}), ...patch }; saveCycle(); renderSteps(); }
+function syncStart() {
+  const b = $("start"), plan = planOf(CYCLE), live = CYCLE && plan && CYCLE.idx < plan.stages.length;
+  const pk = PLANS[planKey()];
+  const ackNeeded = !live && pk?.experimental;
+  $("ackRow").style.display = ackNeeded ? "flex" : "none";
+  if (ackNeeded) $("ackText").textContent = `Experimental route: ${pk.experimental}. Capped at ${fmt2(pk.maxAmount, decOf(pk.alloy))} ${ALLOYS[pk.alloy]?.sym || ""} per cycle. I understand this route is unverified and I am using an amount I can afford to lose.`;
+  let overCap = false; if (ackNeeded) { try { overCap = BigInt(parseAmount($("amount").value, decOf(ALLOY))) > BigInt(pk.maxAmount); } catch {} }
+  b.disabled = !(W.osmo && W.evm) || BUSY || (!live && (!pk || !!FROZEN[ALLOY] || (pk.needsBtc && !W.btc) || (ackNeeded && (!$("ackExperimental").checked || overCap))));
+  b.textContent = live ? `Continue at stage ${CYCLE.idx + 1}` : "Start cycle";
+}
+/* Funds parked mid-route with no active cycle: offer to pick up from where the money is, for each plan that passes there. */
+function renderStranded() {
+  const box = $("strandedBox"); box.innerHTML = "";
+  const plan = planOf(CYCLE); if (CYCLE && plan && CYCLE.idx < plan.stages.length) return;
+  const et = ethTokenOf(ALLOY);
+  const isBtc = ALLOY === btcAlloy().alloy;
+  const parked = { avax: W.bal.avax || 0n, eth: W.bal.eth || 0n, inj: W.bal.inj || 0n, noble: W.bal.noble || 0n, osmoVariant: W.bal.osmoVariant || 0n, btc: W.bal.btc || 0n };   // null (unreadable) reads as 0 here, which only suppresses an offer
+  const sym = { avax: "USDC on Avalanche", eth: `${et?.sym || "USDC"} on Ethereum`, inj: ALLOY === pgAlloy().alloy ? "USDT on Injective" : "USDC.inj on Injective", noble: "USDC on Noble", osmoVariant: isBtc ? "nBTC on Osmosis (not yet deposited)" : "USDT.eth.inj on Osmosis (not yet deposited)", btc: "BTC at your Keplr address" };
+  const dec = { avax: 6, eth: et?.dec ?? 6, inj: 6, noble: 6, osmoVariant: isBtc ? 14 : 6, btc: 8 };
+  const opts = [];
+  for (const [where, amt] of Object.entries(parked)) {
+    // dust (a thousandth of a unit) is rounding, not a stranded leg; on Noble the fee float is USDC too, so only 5 USDC and up counts
+    if (amt < (where === "noble" ? 5000000n : where === "btc" ? 20000n : 10n ** BigInt(Math.max(0, dec[where] - 3)))) continue;   // BTC under 0.0002 is not worth a Chainflip channel
+    for (const [pk, p] of Object.entries(PLANS)) if (p.alloy === ALLOY && p.parked[where]) opts.push(`<button class="small" data-plan="${pk}" data-stage="${p.parked[where]}" data-amt="${amt}">${esc(symOf(p.reduce))} → ${esc(symOf(p.increase))}: continue from ${fmt2(amt, dec[where])} ${sym[where]}</button>`);
+  }
+  if (!opts.length) return;
+  box.innerHTML = `<div class="warnbox">You hold funds mid-route with no cycle recorded. Pick the direction they were travelling: ${opts.join(" ")}</div>`;
+  box.querySelectorAll("button").forEach(b => b.onclick = () => {
+    const p = PLANS[b.dataset.plan], idx = p.stages.indexOf(b.dataset.stage);
+    if (p.experimental && !confirm(`This is an experimental route (${p.experimental}). Continue from the parked balance?`)) return;
+    CYCLE = { plan: b.dataset.plan, startedAt: Date.now(), amountIn: b.dataset.amt, idx, stages: {}, resumedFromBalance: true, addrs: cycleAddrs() };
+    p.stages.slice(0, idx).forEach(k => CYCLE.stages[k] = { state: "done", note: "skipped: resumed from balance" });
+    CYCLE.stages[b.dataset.stage] = { amountIn: b.dataset.amt };
+    saveCycle(); renderSteps(); renderStranded(); runCycle();
+  });
+}
+
+async function runCycle() {
+  if (BUSY || !CYCLE) return;
+  const plan = planOf(CYCLE); if (!plan) return;
+  BUSY = true; renderSteps(); document.querySelectorAll("[data-fund]").forEach(b => b.disabled = true);
+  try {
+    const mm = addrsMismatch(CYCLE.addrs, cycleAddrs(), plan.needsBtc);
+    if (mm) throw new Error("refusing to continue: " + mm);
+    while (CYCLE.idx < plan.stages.length) {
+      const key = plan.stages[CYCLE.idx], prevKey = plan.stages[CYCLE.idx - 1];
+      const amountIn = CYCLE.stages[key]?.amountIn || CYCLE.stages[prevKey]?.received || CYCLE.amountIn;
+      const note = m => { log(`[${key}]`, m); setStage(key, { note: m }); };
+      const mark = patch => setStage(key, patch.hash ? { ...patch, txChain: STAGE[key].txChain } : patch);
+      const st = CYCLE.stages[key] || {};
+      let received;
+      if (st.hash) {
+        // a reload after signing: never sign again. Establish what became of the tx, then wait for arrival against the recorded baseline.
+        const S = STAGE[key], txChain = st.txChain || S.txChain;
+        note(`resuming: tx ${st.hash} on ${txChain} was already sent; checking it`);
+        const state = await txState(txChain, st.hash);
+        if (state === "failed") throw Object.assign(new Error(`the recorded transaction ${st.hash} on ${txChain} was included but FAILED, so nothing moved. Check it on an explorer; if that is right, discard it below and Continue to sign the stage again.`), { offerDiscard: true });
+        if (state === "unknown") throw Object.assign(new Error(`the recorded transaction ${st.hash} on ${txChain} is not known to any endpoint the page can reach. That does not prove it will never land. Check it on an explorer; only if you are sure it was never broadcast, discard it below and Continue.`), { offerDiscard: true });
+        if (state === "pending") note("transaction is pending; waiting for inclusion");
+        if (st.before === undefined || !st.expected) throw new Error("the recorded stage has no baseline; wait for the transfer by hand and use the stranded-funds offer afterwards");
+        if (S.chain) await trackToCompletion(S.chain, st.hash, s => note("Skip: " + s));
+        received = await waitArrival(S.read, BigInt(st.before), st.expected, S.what, 120);
+      } else {
+        if (FROZEN[plan.alloy]) throw new Error(`${ALLOYS[plan.alloy]?.sym || "alloy"} is frozen (${FROZEN[plan.alloy]}); not starting a new stage. Funds already bridged stay where they are; Continue once it is active again.`);
+        setStage(key, { amountIn, state: "running" });
+        received = await STAGE[key].run(amountIn, note, mark);
+      }
+      setStage(key, { state: "done", received, note: `received ${fmtUnits(received, STAGE[key].outDec ?? decOf(plan.alloy))}` });
+      CYCLE.idx++; if (CYCLE.idx === plan.stages.length) CYCLE.finalReceived = received;
+      saveCycle(); renderSteps();
+      await refreshBalances();
+    }
+    log("cycle complete"); await refreshPool();
+  } catch (e) {
+    log("stopped:", e.message);
+    const key = plan.stages[CYCLE.idx];
+    if (key) setStage(key, { state: e.message === "cancelled" ? undefined : "failed", note: e.message });
+    $("cycleBox").innerHTML += `<div class="errbox">${esc(e.message).replace(/\n/g, "<br>")}<br><br>Nothing else was signed. ${e.offerDiscard ? `<button class="small" id="discardTx">Discard the recorded transaction</button> then press Continue to sign the stage again.` : "Fix the cause and press Continue; the cycle resumes at this stage."}</div>`;
+    const d = $("discardTx"); if (d) d.onclick = () => { if (confirm("Discard the recorded transaction? Only do this if you have confirmed on an explorer that it failed or was never broadcast. If it later lands, the stage will have run twice.")) discardRecordedTx(); };
+  } finally { BUSY = false; renderSteps(); await refreshBalances(); }
+}
+
+/* ---------------- gas funding ---------------- */
+async function fundGas(target) {
+  if (BUSY) return; BUSY = true; syncStart(); document.querySelectorAll("[data-fund]").forEach(b => b.disabled = true);
+  const note = m => log(`[gas ${target}]`, m), G = GAS[target];
+  try {
+    const recipient = { osmo: W.osmo, avax: W.evm, eth: W.evm, inj: W.inj, noble: W.noble }[target];
+    const addrs = { "osmosis-1": W.osmo, "noble-1": W.noble, "injective-1": W.inj, "axelar-dojo-1": bech32Rehrp(W.osmo, "axelar"), "43114": W.evm, "1": W.evm };
+    const res = await skipRoute(K.ALL, "osmosis-1", G.dst[0], G.dst[1], G.amount, addrs, { slippage_tolerance_percent: "1" });
+    const v = validateGas(res, { osmo: W.osmo, target, recipient, recipientHex: W.evm }); if (!v.ok) throw refused(v);
+    if (!await confirmSheet({ title: `Buy ${G.sym} gas with ${fmtUnits(G.amount)} allUSDC`, rows: [["You send", `${fmtUnits(G.amount)} allUSDC`], ["You get", `≈ ${fmtUnits(v.amountOut, G.dec)} ${G.sym} (≈ $${v.usd.toFixed(2)})`], ["Delivered to", recipient], ["Contract", K.ENTRY_POINT], ["Estimated", `${v.secs || "?"} s`]] })) throw new Error("cancelled");
+    const readGas = { osmo: () => bankBalance("osmosis-1", W.osmo, "uosmo"), inj: () => bankBalance("injective-1", W.inj, "inj"), noble: () => bankBalance("noble-1", W.noble, "uusdc"),
+                      avax: () => evmNative("43114", W.evm), eth: () => evmNative("1", W.evm) }[target];
+    const before = await readGas();
+    const hash = await signAndBroadcast("osmosis-1", W.osmo, res.txs[0].cosmos_tx.msgs.map(skipMsgToAny), note);
+    note(`tx ${hash}`);
+    if (target !== "osmo") await trackToCompletion("osmosis-1", hash, s => note("Skip: " + s));
+    let after = before; for (let i = 0; i < 60 && after <= before; i++) { await sleep(5000); after = await readGas(); }
+    if (after <= before) throw new Error("gas balance has not risen yet; check again in a minute before retrying");
+    note(`received ${fmtUnits(after - before, G.dec)} ${G.sym}`);
+  } catch (e) { log("gas funding stopped:", e.message); }
+  finally { BUSY = false; await refreshBalances(); syncStart(); }
+}
+
+/* ---------------- wiring ---------------- */
+function updateEstimate() {
+  const a = ALLOYS[ALLOY], key = planKey(), plan = PLANS[key], rd = $("reduce").value, inc = $("increase").value;
+  try {
+    if (!a) { $("estimate").textContent = "–"; return; }
+    const amt = parseAmount($("amount").value, decOf(ALLOY));
+    if (!plan) {
+      const any = Object.values(PLANS).some(p => p.alloy === ALLOY);
+      $("estimate").innerHTML = any ? `<span class="err">no Skip route between ${esc(symOf(rd))} and ${esc(symOf(inc))}; only pairs with a verified bridge path are offered</span>` : `<span class="muted">Composition view only: none of ${esc(alloyName(a))}'s variants has a bridge route in Skip.</span>`; return; }
+    const avail = W.pool?.denoms?.[rd];
+    const cap = (avail !== undefined && BigInt(amt) > avail ? ` <span class="err">The pool only holds ${fmt2(avail, decOf(rd))} ${esc(symOf(rd))}; a larger exit cannot be filled.</span>` : "") + (FROZEN[ALLOY] ? ` <span class="err">Cycling disabled: ${esc(FROZEN[ALLOY])}.</span>` : "")
+      + (plan.experimental ? ` <span class="warn">Experimental route${BigInt(amt) > BigInt(plan.maxAmount) ? `: above the ${fmt2(plan.maxAmount, decOf(ALLOY))} ${esc(a.sym)} cap` : ""}.</span>` : "");
+    const viaEth = plan.stages.some(k => /^(E|D|X|Y|C)/.test(k)), viaCf = plan.stages.some(k => /^(N2|M2)$/.test(k));
+    const fees = viaCf ? " Goes via Ethereum, Chainflip and Nomic: Chainflip is a market swap (about $8 network fee plus slippage), Nomic takes miner fees, plus Axelar/Eureka and Ethereum gas. Expect hours, not minutes." + (plan.needsBtc && !W.btc ? " <span class=\"err\">Needs Keplr Bitcoin connected.</span>" : "")
+               : viaEth ? " Goes via Ethereum: flat Axelar (about $1 to $1.60 out of the amount when unwrapping, about $0.11 of ETH when wrapping) or Eureka (about $0.20) fees plus Ethereum gas, so small cycles are proportionally dearer." : " Bridge fees under $0.05 plus gas.";
+    $("estimate").innerHTML = `${fmt2(amt, decOf(ALLOY))} ${esc(a.sym)} out as ${esc(symOf(rd))}, back as ${esc(symOf(inc))}. ${plan.sigs} signatures, about ${plan.mins} minutes.${fees}${cap}`;
+  } catch (e) { $("estimate").textContent = e.message; }
+  syncStart();
+}
+for (const id of ["reduce", "increase"]) $(id).onchange = () => {
+  if ($("reduce").value === $("increase").value) { const other = [...$(id).options].map(o => o.value).find(v => v !== $(id).value); if (other) $(id === "reduce" ? "increase" : "reduce").value = other; }
+  updateEstimate(); scheduleQuotes();
+};
+$("alloy").onchange = async () => { ALLOY = $("alloy").value; $("amount").value = ALLOY === K.ALL ? "10000" : ALLOYS[ALLOY]?.sym === "allUSDT" ? "1000" : "0.1"; await refreshPool(); await refreshBalances(); scheduleQuotes(); };
+$("amount").oninput = () => { updateEstimate(); scheduleQuotes(); };
+$("ackExperimental").onchange = () => syncStart();
+$("freeExit").onchange = () => { if (CYCLE && planOf(CYCLE) && CYCLE.idx < planOf(CYCLE).stages.length) { CYCLE.freeExit = $("freeExit").checked; saveCycle(); } scheduleQuotes(); };
+function setConnectState(kind, label) {
+  const b = $("connect");
+  b.classList.toggle("linked", kind === "linked"); b.classList.toggle("failed", kind === "failed");
+  $("connectLabel").textContent = label;
+  b.title = kind === "linked" ? `Osmosis   ${W.osmo}\nInjective ${W.inj}  (${W.injHex})\nNoble     ${W.noble}\nEVM       ${W.evm}\nClick to re-check.`
+          : kind === "failed" ? label : "Connect Keplr so the page can read your addresses and balances. Signing always happens in Keplr.";
+}
+$("connect").onclick = async () => {
+  setConnectState("", "Connecting…");
+  try {
+    await connectKeplr(); setConnectState("linked", W.osmo.slice(0, 10) + "…" + W.osmo.slice(-6)); await refreshBalances(); updateEstimate();
+    const plan = planOf(CYCLE);
+    if (CYCLE && plan && CYCLE.idx < plan.stages.length && CYCLE.stages[plan.stages[CYCLE.idx]]?.hash) { log("an in-flight stage was found; resuming its wait"); runCycle(); }
+  }
+  catch (e) { log("Keplr:", e.message); setConnectState("failed", /rejected|denied/i.test(e.message) ? "Request rejected" : "Connect failed: " + e.message.slice(0, 40)); }
+};
+document.querySelectorAll("[data-fund]").forEach(b => b.onclick = () => fundGas(b.dataset.fund));
+$("start").onclick = async () => {
+  const plan = planOf(CYCLE);
+  if (!(CYCLE && plan && CYCLE.idx < plan.stages.length)) {
+    const key = planKey(); if (!PLANS[key]) return log("no verified plan for this alloy and direction");
+    let amountIn; try { amountIn = parseAmount($("amount").value, decOf(ALLOY)); } catch (e) { return log(e.message); }
+    if (W.bal.osmo !== undefined && BigInt(amountIn) > W.bal.osmo) return log(`you hold ${fmt2(W.bal.osmo, decOf(ALLOY))} ${ALLOYS[ALLOY]?.sym}, less than ${fmt2(amountIn, decOf(ALLOY))}`);
+    const avail = W.pool?.denoms?.[$("reduce").value]; if (avail !== undefined && BigInt(amountIn) > avail) return log(`the pool only holds ${fmt2(avail, decOf($("reduce").value))} ${symOf($("reduce").value)}`);
+    if (PLANS[key].experimental && (BigInt(amountIn) > BigInt(PLANS[key].maxAmount) || !$("ackExperimental").checked)) return log("experimental route: acknowledge it and stay within its cap");
+    CYCLE = { plan: key, startedAt: Date.now(), amountIn, idx: 0, stages: {}, freeExit: $("freeExit").checked, addrs: cycleAddrs() }; saveCycle();
+  }
+  $("cycleBox").innerHTML = ""; renderSteps(); runCycle();
+};
+$("abandon").onclick = () => {
+  if (!CYCLE) return;
+  if (!confirm("Abandon the recorded cycle? Funds already bridged stay where they are. The page will offer to continue from those balances once you reconnect.")) return;
+  CYCLE = null; saveCycle(); renderSteps(); renderStranded();
+};
+$("sheetBg").onclick = e => { if (e.target === $("sheetBg") && sheetCancel) sheetCancel(); };
+
+loadCycle(); renderSteps();
+setInterval(() => { if (W.osmo) refreshBalances().catch(() => {}); }, 30000);
+setInterval(() => { refreshPool().catch(() => {}); }, 60000);
+(async () => {
+  loadAlloys(); await loadSymbols();
+  await refreshPool(); renderSteps(); scheduleQuotes();
+})();
+if (CYCLE && planOf(CYCLE) && CYCLE.idx < planOf(CYCLE).stages.length) log(`resuming: ${CYCLE.plan} at stage ${CYCLE.idx + 1}; connect Keplr then press Continue`);
+</script>
+</body>
+</html>
