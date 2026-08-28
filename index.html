@@ -223,7 +223,7 @@ const K = {
   ASSETLIST: "https://raw.githubusercontent.com/osmosis-labs/assetlists/main/osmosis-1/generated/frontend/assetlist.json",
   OSMO_REST:  ["https://lcd.osmosis.zone", "https://osmosis-api.polkachu.com", "https://rest.lavenderfive.com:443/osmosis"],
   INJ_REST:   ["https://injective-api.polkachu.com", "https://rest.lavenderfive.com:443/injective", "https://injective-rest.publicnode.com", "https://sentry.lcd.injective.network:443"],
-  NOBLE_REST: ["https://noble-api.polkachu.com", "https://rest.lavenderfive.com:443/noble", "https://noble-rest.owallet.io"],
+  NOBLE_REST: ["https://noble-api.polkachu.com", "https://rest.lavenderfive.com:443/noble"],   // owallet's Noble REST sends no CORS headers
   INJ_GAS_PRICE: 160000000,    // inj per gas, the chain's fixed minimum
   NOBLE_GAS_PRICE: 0.1,        // uusdc per gas
   OSMO_MIN_GAS_PRICE: 0.03,    // uosmo per gas floor; the live EIP-1559 base fee is used if higher
@@ -1895,6 +1895,7 @@ function planOf(c) { return PLANS[c?.plan]; }
 function renderSteps() {
   const c = CYCLE, plan = planOf(c);
   $("steps").innerHTML = !plan ? "" : plan.stages.map((key, i) => {
+    const S = STAGE[key], title = typeof S.title === "function" ? S.title() : S.title;
     const st = c.stages[key] || {}, active = c.idx === i;
     const cls = st.state === "done" ? "done" : st.state === "failed" ? "failed" : active ? "active" : "";
     const badge = st.state === "done" ? "done" : st.state === "failed" ? "failed" : active ? (BUSY ? "running" : st.hash ? "in flight" : "next") : c.idx < i ? "waiting" : "";
@@ -1903,7 +1904,6 @@ function renderSteps() {
     const inDec = S.inDec ?? decOf(plan.alloy), outDec = S.outDec ?? decOf(plan.alloy);
     if (st.amountIn) lines.push(`in ${fmtUnits(st.amountIn, inDec)}` + (st.received ? ` → received ${fmtUnits(st.received, outDec)}` : ""));
     if (st.note) lines.push(st.note);
-    const S = STAGE[key], title = typeof S.title === "function" ? S.title() : S.title;
     return `<li class="step ${cls}"><h3><span>${i + 1}. ${esc(title)}</span><span class="badge">${badge}</span></h3><div class="detail">${esc(STAGE[key].who)}${lines.length ? "<br>" + lines.map(esc).join("<br>") : ""}</div></li>`;
   }).join("");
   const live = c && plan && c.idx < plan.stages.length;

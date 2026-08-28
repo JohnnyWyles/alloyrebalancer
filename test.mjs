@@ -500,7 +500,7 @@ ok(!M.validateNobleToHub(freshen(FIX("gas-noble-good.json")), { ...c1, osmo: OSM
 ok(!M.validateGas(a1, gc("avax")).ok && !M.validateGas(freshen(FIX("stageA1-bad-allbtc-detour.json")), gc("avax")).ok, "gas validator refuses exit routes");
 
 /* ---------- temporal-dead-zone guard for the long async handlers ---------- */
-for (const name of ["signAndBroadcast", "runCycle", "fundGas", "sendSkipEvm", "connectKeplr"]) {
+for (const name of ["signAndBroadcast", "runCycle", "fundGas", "sendSkipEvm", "connectKeplr", "renderSteps", "renderStranded", "refreshPool", "syncStart", "updateEstimate"]) {
   const body = fn(name).replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "").replace(/`[^`]*`|"[^"]*"|'[^']*'/g, '""');
   const decls = [...body.matchAll(/\b(?:const|let)\s+(?:\{([^}]*)\}|\[([^\]]*)\]|(\w+))/g)].flatMap(m => m[1] || m[2] ? (m[1] || m[2]).split(",").map(s => s.trim().split(":").pop().trim()).filter(Boolean) : [m[3]]);
   for (const d of decls) {
