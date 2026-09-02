@@ -45,13 +45,13 @@ const FNS = ["uint64Value","varint","cat","tag","bytesF","strF","u64F","Height",
 const src = [
   "const te = new TextEncoder();",
   extractFrom(/const K = /, "K"), extractFrom(/const GAS = /, "GAS"),
-  arrow("U64_MAX"), arrow("B32"), arrow("Any"), arrow("Coin"), arrow("pad32"), arrow("sameAddr"), arrow("hexToBytes"), arrow("opKind"), arrow("nearly"), arrow("limiterDenom"), arrow("bridgeFee"),
+  arrow("U64_MAX"), arrow("B32"), arrow("Any"), arrow("sortedJson"), arrow("Coin"), arrow("pad32"), arrow("sameAddr"), arrow("hexToBytes"), arrow("opKind"), arrow("nearly"), arrow("limiterDenom"), arrow("bridgeFee"),
   arrow("OPC"), arrow("sha256"), arrow("nomicWithdrawMemo"), arrow("abiStr"), arrow("wordEq"),
   "const esc = s => String(s).replace(/[&<>\\\"']/g, c => ({\"&\":\"&amp;\",\"<\":\"&lt;\",\">\":\"&gt;\",'\"':\"&quot;\",\"'\":\"&#39;\"}[c]));",
   "const unb64 = s => Uint8Array.from(Buffer.from(s, 'base64'));",
   ...FNS.map(fn),
   arrow("validateAxlUnwrap"), arrow("validateEthToAll"),
-  `export {K,GAS,${FNS.join(",")},Any,Coin,pad32,sameAddr,nearly,limiterDenom,validateAxlUnwrap,validateEthToAll,nomicWithdrawMemo};`,
+  `export {K,GAS,${FNS.join(",")},Any,Coin,sortedJson,pad32,sameAddr,nearly,limiterDenom,validateAxlUnwrap,validateEthToAll,nomicWithdrawMemo};`,
 ].join("\n");
 const tmp = path.join(process.cwd(), ".test-extract.mjs");
 fs.writeFileSync(tmp, src);
@@ -242,11 +242,12 @@ function freshen(res) {
     nb = nb.slice(0, st) + setW(nb.slice(st), 4, future);
     t.evm_tx.data = d.slice(0, 8) + nb;
   }
-  /* Axelar GMP calldata embeds a timeout too: rewrite the digits in place so the hex stays aligned */
+  /* Axelar GMP and Eureka calldata embed JSON timeouts too, sometimes escaped inside a nested memo string:
+     rewrite the digits of every occurrence in place so the hex stays aligned */
   for (const t of r.txs || []) if (t.evm_tx?.data) {
-    const buf = Buffer.from(t.evm_tx.data.replace(/^0x/, ""), "hex"); const s = buf.toString("latin1");
-    const i = s.indexOf('"timeout_timestamp":');
-    if (i >= 0) { const m = /"timeout_timestamp":(\d+)/.exec(s.slice(i)); const fixed = s.slice(0, i) + `"timeout_timestamp":${FUTURE.padStart(m[1].length, "1").slice(0, m[1].length)}` + s.slice(i + m[0].length); t.evm_tx.data = Buffer.from(fixed, "latin1").toString("hex"); }
+    const buf = Buffer.from(t.evm_tx.data.replace(/^0x/, ""), "hex");
+    const fixed = buf.toString("latin1").replace(/("timeout_timestamp\\?":)(\d+)/g, (all, pre, num) => pre + FUTURE.padStart(num.length, "1").slice(0, num.length));
+    t.evm_tx.data = Buffer.from(fixed, "latin1").toString("hex");
   }
   return r;
 }
@@ -511,5 +512,51 @@ for (const name of ["signAndBroadcast", "runCycle", "fundGas", "sendSkipEvm", "c
 }
 
 fs.unlinkSync(tmp);
+
+/* ---------- amino forms (Ledger signing) ---------- */
+{
+  const xp = { sourcePort: "transfer", sourceChannel: "channel-750",
+    token: { denom: "ibc/498A0751C798A0D9A389AA3691123DADA57DAA4FE165D5C75894505B876BA6E4", amount: "25000000" },
+    sender: "osmo19w2t4ue7qpdh6022m3yxmxvv3w7jla7u3hfq0r", receiver: "noble15xt7kx5mles58vkkfxvf0lq7",
+    timeoutHeight: {}, timeoutTimestamp: "1756400000000000000", memo: '{"orbiter":{}}' };
+  const xa = M.MsgTransfer(xp).amino;
+  ok(M.sortedJson(xa) === M.sortedJson({ type: "cosmos-sdk/MsgTransfer", value: {
+    source_port: "transfer", source_channel: "channel-750",
+    token: { denom: xp.token.denom, amount: "25000000" }, sender: xp.sender, receiver: xp.receiver,
+    timeout_height: {}, timeout_timestamp: "1756400000000000000", memo: '{"orbiter":{}}' } }), "MsgTransfer amino: zero height empty object, ts and memo present");
+  const x0 = M.MsgTransfer({ ...xp, timeoutTimestamp: "0", memo: "", timeoutHeight: { revisionNumber: "1", revisionHeight: "500" } }).amino;
+  ok(!("timeout_timestamp" in x0.value) && !("memo" in x0.value), "MsgTransfer amino: zero timestamp and empty memo omitted");
+  ok(M.sortedJson(x0.value.timeout_height) === M.sortedJson({ revision_number: "1", revision_height: "500" }), "MsgTransfer amino: nonzero height as strings");
+
+  const sw = M.MsgSwapExactAmountIn({ sender: "osmo1a", routes: [{ poolId: "3497", tokenOutDenom: "ibc/498A" }], tokenIn: { denom: "factory/x/allUSDC", amount: 25000000n }, tokenOutMinAmount: 25000000n }).amino;
+  ok(M.sortedJson(sw) === M.sortedJson({ type: "osmosis/poolmanager/swap-exact-amount-in", value: {
+    sender: "osmo1a", routes: [{ pool_id: "3497", token_out_denom: "ibc/498A" }],
+    token_in: { denom: "factory/x/allUSDC", amount: "25000000" }, token_out_min_amount: "25000000" } }), "MsgSwapExactAmountIn amino: pool_id and amounts as strings");
+
+  const ex = M.MsgExecuteContract({ sender: "osmo1a", contract: "osmo1b", msg: te.encode('{"swap_and_action":{"x":1}}'), funds: [{ denom: "uosmo", amount: 5n }] }).amino;
+  ok(M.sortedJson(ex) === M.sortedJson({ type: "wasm/MsgExecuteContract", value: { sender: "osmo1a", contract: "osmo1b", msg: { swap_and_action: { x: 1 } }, funds: [{ denom: "uosmo", amount: "5" }] } }), "MsgExecuteContract amino: msg embedded as JSON, funds amounts as strings");
+
+  const se = M.MsgSendToEth({ sender: "inj1a", ethDest: "0xdead", amount: { denom: "peggy0xd", amount: "5000000" }, bridgeFee: { denom: "peggy0xd", amount: "5000000" } }).amino;
+  ok(se.type === "peggy/MsgSendToEth" && se.value.eth_dest === "0xdead" && se.value.bridge_fee.amount === "5000000", "MsgSendToEth amino");
+
+  const anyv = M.Any("/ibc.applications.transfer.v1.MsgTransfer", M.MsgTransfer(xp));
+  ok(anyv.amino && anyv.amino.type === "cosmos-sdk/MsgTransfer", "Any propagates the amino form");
+  const sk = M.skipMsgToAny({ msg_type_url: "/cosmwasm.wasm.v1.MsgExecuteContract", msg: { sender: "osmo1a", contract: "osmo1b", msg: { q: 1 }, funds: [{ denom: "uosmo", amount: "1" }] } });
+  ok(sk.amino && sk.amino.type === "wasm/MsgExecuteContract" && sk.amino.value.msg.q === 1, "skipMsgToAny output carries amino");
+
+  ok(M.sortedJson({ b: 1, a: { d: 2, c: 3 } }) === M.sortedJson({ a: { c: 3, d: 2 }, b: 1 }), "sortedJson is key-order insensitive");
+  ok(M.sortedJson([1, 2]) !== M.sortedJson([2, 1]), "sortedJson keeps array order significant");
+}
+{
+  const sab = fn("signAndBroadcast");
+  ok(/isNanoLedger/.test(sab) && /signAmino\(/.test(sab) && /SignerInfo\(pkAny, 127,/.test(sab), "signAndBroadcast has the Ledger amino branch with mode 127");
+  ok(/injective-1/.test(sab.split("isNanoLedger")[1].split("} else {")[0]), "the Ledger branch refuses Injective (EIP-712 only)");
+  ok(/sortedJson\(s\.signed\.msgs\) !== sortedJson\(aminoMsgs\)/.test(sab), "a wallet-altered amino doc is refused before broadcast");
+  ok((HTML.match(/window\.keplr\.signDirect\(/g) || []).length === 1 && (HTML.match(/window\.keplr\.signAmino\(/g) || []).length === 1, "exactly one signDirect and one signAmino call site");
+  const ck = fn("connectKeplr");
+  ok(/routes that sign on Injective stay disabled/.test(ck) && /ki\.isNanoLedger/.test(ck), "connect survives a missing or Ledger-only Injective key");
+  ok(/planNeedsInj\(pk\) && !W\.inj/.test(fn("syncStart")), "syncStart gates Injective-signing plans when no Injective account");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

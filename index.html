@@ -359,20 +359,32 @@ function tag(f,w){ return varint((f<<3)|w); }
 function bytesF(f,b){ return cat(tag(f,2), varint(b.length), b); }
 function strF(f,s){ return bytesF(f, te.encode(s)); }
 function u64F(f,v){ return cat(tag(f,0), varint(uint64Value(v))); }
-const Any  = (u,v) => cat(strF(1,u), bytesF(2,v));
+const Any  = (u,v) => { const a = cat(strF(1,u), bytesF(2,v)); if (v.amino) a.amino = v.amino; return a; };
+const sortedJson = x => JSON.stringify(x, (kk, v) => v && typeof v === "object" && !Array.isArray(v) ? Object.keys(v).sort().reduce((o, q) => (o[q] = v[q], o), {}) : v);
 const Coin = (d,a) => cat(strF(1,d), strF(2,a));
 function Height(rev,h){ let o=new Uint8Array(0); if(BigInt(rev||0)!==0n)o=cat(o,u64F(1,rev)); if(BigInt(h||0)!==0n)o=cat(o,u64F(2,h)); return o; }
+/* Each builder also attaches its legacy-amino JSON form (m.amino). A Ledger can only sign
+   SIGN_MODE_LEGACY_AMINO_JSON, and at verification the chain re-derives this JSON from the proto
+   bytes, so field presence below mirrors the chain's omitempty marshalling exactly. */
 function MsgTransfer(p){
   let m = cat(strF(1,p.sourcePort), strF(2,p.sourceChannel), bytesF(3,Coin(p.token.denom,p.token.amount)), strF(4,p.sender), strF(5,p.receiver));
   m = cat(m, bytesF(6, Height(p.timeoutHeight?.revisionNumber, p.timeoutHeight?.revisionHeight)));   // non-optional: always emitted
   if (BigInt(p.timeoutTimestamp||0)!==0n) m = cat(m, u64F(7,p.timeoutTimestamp));
   if (p.memo) m = cat(m, strF(8, p.memo));
+  const th = {};
+  if (BigInt(p.timeoutHeight?.revisionNumber || 0) !== 0n) th.revision_number = String(p.timeoutHeight.revisionNumber);
+  if (BigInt(p.timeoutHeight?.revisionHeight || 0) !== 0n) th.revision_height = String(p.timeoutHeight.revisionHeight);
+  m.amino = { type: "cosmos-sdk/MsgTransfer", value: { source_port: p.sourcePort, source_channel: p.sourceChannel,
+    token: { denom: p.token.denom, amount: String(p.token.amount) }, sender: p.sender, receiver: p.receiver, timeout_height: th,
+    ...(BigInt(p.timeoutTimestamp || 0) !== 0n ? { timeout_timestamp: String(p.timeoutTimestamp) } : {}), ...(p.memo ? { memo: p.memo } : {}) } };
   return m;
 }
 /* MsgExecuteContract: sender=1, contract=2, msg=3 (bytes), funds=5 (repeated Coin). Field 4 is reserved. */
 function MsgExecuteContract(p){
   let m = cat(strF(1,p.sender), strF(2,p.contract), bytesF(3, p.msg));
   for (const c of p.funds || []) m = cat(m, bytesF(5, Coin(c.denom, c.amount)));
+  m.amino = { type: "wasm/MsgExecuteContract", value: { sender: p.sender, contract: p.contract,
+    msg: JSON.parse(new TextDecoder().decode(p.msg)), funds: (p.funds || []).map(c => ({ denom: c.denom, amount: String(c.amount) })) } };
   return m;
 }
 /* osmosis.poolmanager MsgSwapExactAmountIn: sender=1, routes=2 (repeated {pool_id=1 uint64, token_out_denom=2}),
@@ -383,11 +395,19 @@ function MsgSwapExactAmountIn(p){
   let m = strF(1,p.sender);
   for (const r of p.routes) m = cat(m, bytesF(2, SwapAmountInRoute(r)));
   m = cat(m, bytesF(3, Coin(p.tokenIn.denom, p.tokenIn.amount)));
-  return cat(m, strF(4, p.tokenOutMinAmount));
+  m = cat(m, strF(4, p.tokenOutMinAmount));
+  m.amino = { type: "osmosis/poolmanager/swap-exact-amount-in", value: { sender: p.sender,
+    routes: p.routes.map(r => ({ pool_id: String(r.poolId), token_out_denom: r.tokenOutDenom })),
+    token_in: { denom: p.tokenIn.denom, amount: String(p.tokenIn.amount) }, token_out_min_amount: String(p.tokenOutMinAmount) } };
+  return m;
 }
 /* injective.peggy.v1.MsgSendToEth: sender=1, eth_dest=2, amount=3 (Coin), bridge_fee=4 (Coin). Confirmed by Injective's own
    /cosmos/tx/v1beta1/decode. */
-function MsgSendToEth(p){ return cat(strF(1,p.sender), strF(2,p.ethDest), bytesF(3,Coin(p.amount.denom,p.amount.amount)), bytesF(4,Coin(p.bridgeFee.denom,p.bridgeFee.amount))); }
+function MsgSendToEth(p){
+  const m = cat(strF(1,p.sender), strF(2,p.ethDest), bytesF(3,Coin(p.amount.denom,p.amount.amount)), bytesF(4,Coin(p.bridgeFee.denom,p.bridgeFee.amount)));
+  m.amino = { type: "peggy/MsgSendToEth", value: { sender: p.sender, eth_dest: p.ethDest, amount: { denom: p.amount.denom, amount: String(p.amount.amount) }, bridge_fee: { denom: p.bridgeFee.denom, amount: String(p.bridgeFee.amount) } } };
+  return m;
+}
 /* ABI calldata for Peggy.sendToInjective(address token, bytes32 destination, uint256 amount, string data) with empty data.
    The destination is the Injective account's 20 bytes left-padded to 32, which is how peggo reads it back. */
 function peggySendCalldata(token, destinationHex, amount) {
@@ -1165,17 +1185,27 @@ function addrsMismatch(recorded, current, needsBtc) {
 }
 async function connectKeplr() {
   if (!window.keplr) throw new Error("Keplr not found");
-  await window.keplr.enable(["osmosis-1", "injective-1", "noble-1"]);
-  const [ko, ki, kn] = await Promise.all(["osmosis-1", "injective-1", "noble-1"].map(c => window.keplr.getKey(c)));
-  W.osmo = ko.bech32Address; W.inj = ki.bech32Address; W.noble = kn.bech32Address;
+  await window.keplr.enable(["osmosis-1", "noble-1"]);
+  const [ko, kn] = await Promise.all(["osmosis-1", "noble-1"].map(c => window.keplr.getKey(c)));
+  W.osmo = ko.bech32Address; W.noble = kn.bech32Address; W.ledger = !!ko.isNanoLedger;
   if (bech32Rehrp(W.osmo, "noble") !== W.noble) throw new Error(`Keplr's Noble account ${W.noble} is not the same key as its Osmosis account`);
-  W.injHex = bech32ToHex(W.inj); W.nobleHex = bech32ToHex(W.noble); W.hub = bech32Rehrp(W.osmo, "cosmos");   // same key, coin type 118
-  if (ki.ethereumHexAddress && !sameAddr(ki.ethereumHexAddress, W.injHex)) throw new Error(`Keplr reports ${ki.ethereumHexAddress} for Injective but the bech32 decodes to ${W.injHex}`);
+  W.nobleHex = bech32ToHex(W.noble); W.hub = bech32Rehrp(W.osmo, "cosmos");   // same key, coin type 118
+  // Injective is optional: its key differs (ethsecp256k1), and with a Ledger Keplr signs it only via
+  // EIP-712, which this page does not implement. Routes that sign on Injective are disabled without it.
+  W.inj = W.injHex = null;
+  try {
+    await window.keplr.enable(["injective-1"]);
+    const ki = await window.keplr.getKey("injective-1");
+    if (ki.isNanoLedger) throw new Error("Injective Ledger signing is EIP-712, which this page does not implement");
+    const hexInj = bech32ToHex(ki.bech32Address);
+    if (ki.ethereumHexAddress && !sameAddr(ki.ethereumHexAddress, hexInj)) throw new Error(`Keplr reports ${ki.ethereumHexAddress} for Injective but the bech32 decodes to ${hexInj}`);
+    W.inj = ki.bech32Address; W.injHex = hexInj;
+  } catch (e) { log("Injective (Keplr):", e.message, "· routes that sign on Injective stay disabled"); }
   if (!window.keplr.ethereum) throw new Error("this Keplr has no EVM provider (window.keplr.ethereum); update the extension");
   const accs = await window.keplr.ethereum.request({ method: "eth_requestAccounts" });
   W.evm = accs[0];
   try { await connectBitcoin(); } catch (e) { W.btc = null; log("Bitcoin (Keplr):", e.message, "· BTC plans stay disabled"); }
-  log("Keplr:", W.osmo, W.inj, W.noble, W.evm);
+  log("Keplr:", W.osmo, W.inj || "(no Injective)", W.noble, W.evm, W.ledger ? "· Ledger key: amino signing" : "");
 }
 const eth = (method, params = []) => { if (!window.keplr?.ethereum) throw new Error("Keplr EVM provider missing"); return window.keplr.ethereum.request({ method, params }); };
 async function ensureEvmChain(id) {
@@ -1230,7 +1260,7 @@ async function refreshBalances() {
   if (!W.osmo) return;
   const jobs = [
     (async () => { const [a, g] = await Promise.all([bankBalance("osmosis-1", W.osmo, ALLOY), bankBalance("osmosis-1", W.osmo, "uosmo")]); W.bal.osmo = a; $("bal_osmo").textContent = fmt2(a, decOf(ALLOY)); $("gas_osmo").innerHTML = gasCell(g, 6, "OSMO", LOW.osmo); })(),
-    (async () => { const injDenom = ALLOY === pgAlloy().alloy ? PG.injDenom : K.INJ_ERC20; $("injSym").textContent = ALLOY === pgAlloy().alloy ? "USDT (Peggy)" : "USDC.inj"; const [a, g] = await Promise.all([bankBalance("injective-1", W.inj, injDenom), bankBalance("injective-1", W.inj, "inj")]); W.bal.inj = a; $("bal_inj").textContent = fmt2(a); $("gas_inj").innerHTML = gasCell(g, 18, "INJ", LOW.inj); })(),
+    (async () => { const injDenom = ALLOY === pgAlloy().alloy ? PG.injDenom : K.INJ_ERC20; $("injSym").textContent = ALLOY === pgAlloy().alloy ? "USDT (Peggy)" : "USDC.inj"; if (!W.inj) { W.bal.inj = 0n; $("bal_inj").textContent = "\u2013"; $("gas_inj").textContent = "\u2013"; return; } const [a, g] = await Promise.all([bankBalance("injective-1", W.inj, injDenom), bankBalance("injective-1", W.inj, "inj")]); W.bal.inj = a; $("bal_inj").textContent = fmt2(a); $("gas_inj").innerHTML = gasCell(g, 18, "INJ", LOW.inj); })(),
     (async () => { W.bal.osmoVariant = ALLOY === pgAlloy().alloy ? await bankBalance("osmosis-1", W.osmo, PG.inj) : ALLOY === btcAlloy().alloy ? await bankBalance("osmosis-1", W.osmo, K.NBTC) : 0n; })(),
     (async () => { const show = ALLOY === btcAlloy().alloy && W.btc; $("row_btc").style.display = show ? "" : "none"; if (show) { const b = await btcBalance(W.btc); W.bal.btc = b; $("bal_btc").textContent = fmt2(b, 8) + " BTC"; } else W.bal.btc = 0n; })(),
     (async () => { try { const a = await bankBalance("noble-1", W.noble, "uusdc"); W.bal.noble = a; $("bal_noble").textContent = fmt2(a); $("gas_noble").innerHTML = gasCell(a, 6, "USDC", LOW.noble); } catch (e) { W.bal.noble = null; $("bal_noble").textContent = "?"; $("gas_noble").innerHTML = `<span class="warn">unreadable</span>`; throw e; } })(),
@@ -1356,7 +1386,7 @@ async function updateQuotes() {
 }
 const planKey = () => { const rd = $("reduce").value, inc = $("increase").value; return Object.keys(PLANS).find(k => PLANS[k].alloy === ALLOY && PLANS[k].reduce === rd && PLANS[k].increase === inc) || null; };
 
-/* ---------------- cosmos sign + broadcast (SIGN_MODE_DIRECT everywhere) ---------------- */
+/* ---------------- cosmos sign + broadcast (SIGN_MODE_DIRECT; legacy amino when the key is a Ledger) ---------------- */
 function pubkeyTypeUrl(chainId, algo) {
   if (chainId === "injective-1") return "/injective.crypto.v1beta1.ethsecp256k1.PubKey";
   if (String(algo || "").includes("ethsecp256k1")) return "/ethermint.crypto.v1.ethsecp256k1.PubKey";
@@ -1381,11 +1411,24 @@ async function signAndBroadcast(chainId, signer, anys, onNote, onHash) {
   const used = Number(sim.gas_info?.gas_used || 0); if (!used) throw new Error("node returned no gas_used");
   const gas = Math.ceil(used * 1.4), fee = String(Math.ceil(gas * await gasPriceOf(chainId)));
   onNote(`gas ${gas}, fee ${fmtUnits(fee, C.feeDec)} ${C.feeSym}`);
-  const authInfo = AuthInfo([SignerInfo(pkAny, 1, acc.sequence)], Fee([{ denom: C.feeDenom, amount: fee }], String(gas)));
-  const signed = await window.keplr.signDirect(chainId, signer, { bodyBytes: body, authInfoBytes: authInfo, chainId, accountNumber: String(acc.accountNumber) });
-  const bb = signed.signed?.bodyBytes ? new Uint8Array(signed.signed.bodyBytes) : body;
-  const ab = signed.signed?.authInfoBytes ? new Uint8Array(signed.signed.authInfoBytes) : authInfo;
-  const raw = TxRaw(bb, ab, [unb64(signed.signature.signature)]);
+  let raw;
+  if (k.isNanoLedger) {
+    // A Ledger signs only the legacy amino JSON. The broadcast tx still carries the proto messages; the chain
+    // re-derives the amino doc from them at verification, so the m.amino forms must round-trip exactly.
+    if (chainId === "injective-1") throw new Error("a Ledger cannot sign on Injective from this page (Injective Ledger signing is EIP-712, not implemented here)");
+    const aminoMsgs = anys.map(a => { if (!a.amino) throw new Error("this message type has no amino form and cannot be signed with a Ledger"); return a.amino; });
+    onNote("confirm on the Ledger (amino); large messages may need Expert mode on the device");
+    const s = await window.keplr.signAmino(chainId, signer, { chain_id: chainId, account_number: String(acc.accountNumber), sequence: String(acc.sequence),
+      fee: { amount: [{ denom: C.feeDenom, amount: fee }], gas: String(gas) }, msgs: aminoMsgs, memo: "" });
+    if (sortedJson(s.signed.msgs) !== sortedJson(aminoMsgs) || s.signed.memo) throw new Error("the wallet altered the messages or memo while signing; refusing to broadcast");
+    raw = TxRaw(body, AuthInfo([SignerInfo(pkAny, 127, s.signed.sequence)], Fee(s.signed.fee.amount, s.signed.fee.gas)), [unb64(s.signature.signature)]);
+  } else {
+    const authInfo = AuthInfo([SignerInfo(pkAny, 1, acc.sequence)], Fee([{ denom: C.feeDenom, amount: fee }], String(gas)));
+    const signed = await window.keplr.signDirect(chainId, signer, { bodyBytes: body, authInfoBytes: authInfo, chainId, accountNumber: String(acc.accountNumber) });
+    const bb = signed.signed?.bodyBytes ? new Uint8Array(signed.signed.bodyBytes) : body;
+    const ab = signed.signed?.authInfoBytes ? new Uint8Array(signed.signed.authInfoBytes) : authInfo;
+    raw = TxRaw(bb, ab, [unb64(signed.signature.signature)]);
+  }
   const hash = await txHashOf(raw);
   if (onHash) onHash(hash);   // recorded before the POST: a reload after this point resumes by waiting, not by signing again
   onNote(`broadcasting ${hash} via ${simEp}`);
@@ -1916,6 +1959,7 @@ function renderSteps() {
   syncStart();
 }
 function setStage(key, patch) { CYCLE.stages[key] = { ...(CYCLE.stages[key] || {}), ...patch }; saveCycle(); renderSteps(); }
+const planNeedsInj = p => !!p && p.stages.some(sk => STAGE[sk].txChain === "injective-1");
 function syncStart() {
   const b = $("start"), plan = planOf(CYCLE), live = CYCLE && plan && CYCLE.idx < plan.stages.length;
   const pk = PLANS[planKey()];
@@ -1923,8 +1967,9 @@ function syncStart() {
   $("ackRow").style.display = ackNeeded ? "flex" : "none";
   if (ackNeeded) $("ackText").textContent = `Experimental route: ${pk.experimental}. Capped at ${fmt2(pk.maxAmount, decOf(pk.alloy))} ${ALLOYS[pk.alloy]?.sym || ""} per cycle. I understand this route is unverified and I am using an amount I can afford to lose.`;
   let overCap = false; if (ackNeeded) { try { overCap = BigInt(parseAmount($("amount").value, decOf(ALLOY))) > BigInt(pk.maxAmount); } catch {} }
-  b.disabled = !(W.osmo && W.evm) || BUSY || (!live && (!pk || !!FROZEN[ALLOY] || (pk.needsBtc && !W.btc) || (ackNeeded && (!$("ackExperimental").checked || overCap))));
+  b.disabled = !(W.osmo && W.evm) || BUSY || (!live && (!pk || !!FROZEN[ALLOY] || (planNeedsInj(pk) && !W.inj) || (pk.needsBtc && !W.btc) || (ackNeeded && (!$("ackExperimental").checked || overCap))));
   b.textContent = live ? `Continue at stage ${CYCLE.idx + 1}` : "Start cycle";
+  b.title = !live && pk && planNeedsInj(pk) && !W.inj ? "This route signs on Injective; connect a mnemonic-backed Keplr account (a Ledger cannot sign on Injective from this page)." : "";
 }
 /* Funds parked mid-route with no active cycle: offer to pick up from where the money is, for each plan that passes there. */
 function renderStranded() {
@@ -2004,6 +2049,7 @@ async function fundGas(target) {
   const note = m => log(`[gas ${target}]`, m), G = GAS[target];
   try {
     const recipient = { osmo: W.osmo, avax: W.evm, eth: W.evm, inj: W.inj, noble: W.noble }[target];
+    if (!recipient) throw new Error(`no ${target} account is connected`);
     const addrs = { "osmosis-1": W.osmo, "noble-1": W.noble, "injective-1": W.inj, "axelar-dojo-1": bech32Rehrp(W.osmo, "axelar"), "43114": W.evm, "1": W.evm };
     const res = await skipRoute(K.ALL, "osmosis-1", G.dst[0], G.dst[1], G.amount, addrs, { slippage_tolerance_percent: "1" });
     const v = validateGas(res, { osmo: W.osmo, target, recipient, recipientHex: W.evm }); if (!v.ok) throw refused(v);
@@ -2052,7 +2098,7 @@ function setConnectState(kind, label) {
   const b = $("connect");
   b.classList.toggle("linked", kind === "linked"); b.classList.toggle("failed", kind === "failed");
   $("connectLabel").textContent = label;
-  b.title = kind === "linked" ? `Osmosis   ${W.osmo}\nInjective ${W.inj}  (${W.injHex})\nNoble     ${W.noble}\nEVM       ${W.evm}\nClick to re-check.`
+  b.title = kind === "linked" ? `Osmosis   ${W.osmo}\nInjective ${W.inj ? `${W.inj}  (${W.injHex})` : "unavailable: routes through Injective disabled"}\nNoble     ${W.noble}\nEVM       ${W.evm}${W.ledger ? "\nLedger key: amino signing" : ""}\nClick to re-check.`
           : kind === "failed" ? label : "Connect Keplr so the page can read your addresses and balances. Signing always happens in Keplr.";
 }
 $("connect").onclick = async () => {
