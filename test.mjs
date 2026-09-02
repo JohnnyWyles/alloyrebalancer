@@ -556,6 +556,7 @@ fs.unlinkSync(tmp);
   const ck = fn("connectKeplr");
   ok(/routes that sign on Injective stay disabled/.test(ck) && /ki\.isNanoLedger/.test(ck), "connect survives a missing or Ledger-only Injective key");
   ok(/planNeedsInj\(pk\) && !W\.inj/.test(fn("syncStart")), "syncStart gates Injective-signing plans when no Injective account");
+  ok(fn("skipRoute").includes("Object.entries(addrs).filter(([, v]) => v)"), "skipRoute drops empty addresses before calling Skip");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

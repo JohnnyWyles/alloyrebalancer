@@ -657,8 +657,10 @@ async function connectBitcoin() {
 async function skipPost(path, body) { return jget(K.SKIP + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); }
 const SKIP_OPTS = { allow_multi_tx: false, allow_unsafe: false, smart_relay: true, go_fast: false, experimental_features: ["cctp", "axelar"], slippage_tolerance_percent: "0.05" };
 async function skipRoute(src, srcChain, dst, dstChain, amount, addrs, extra = {}) {
+  // a connected wallet can lack some accounts (no signable Injective on Ledger); Skip rejects null addresses
   return skipPost("/v2/fungible/msgs_direct", { ...SKIP_OPTS, ...extra, source_asset_denom: src, source_asset_chain_id: srcChain,
-    dest_asset_denom: dst, dest_asset_chain_id: dstChain, amount_in: amount, chain_ids_to_addresses: addrs });
+    dest_asset_denom: dst, dest_asset_chain_id: dstChain, amount_in: amount,
+    chain_ids_to_addresses: Object.fromEntries(Object.entries(addrs).filter(([, v]) => v)) });
 }
 async function skipTrack(chainId, hash) {
   for (let i = 0; i < 6; i++) { try { return await skipPost("/v2/tx/track", { chain_id: chainId, tx_hash: hash }); } catch (e) { log("track retry:", e.message); await sleep(5000); } }
@@ -1269,7 +1271,11 @@ async function refreshBalances() {
   ];
   const rs = await Promise.allSettled(jobs);
   rs.forEach((r, i) => { if (r.status === "rejected") log(["osmosis", "injective", "noble", "avalanche", "ethereum", "osmosis variant", "bitcoin"][i] + " balance:", r.reason?.message || r.reason); });
-  document.querySelectorAll("[data-fund]").forEach(b => b.disabled = BUSY);
+  document.querySelectorAll("[data-fund]").forEach(b => {
+    const noAcct = b.dataset.fund === "inj" && !W.inj;
+    b.disabled = BUSY || noAcct;
+    b.title = noAcct ? "No signable Injective account is connected (a Ledger cannot sign on Injective from this page)." : "";
+  });
   renderStranded(); syncStart();
 }
 const PALETTE = ["#7b67f6", "#30b5bd", "#f59e0b", "#ef4444", "#22c55e", "#ec4899", "#0ea5e9", "#a3e635", "#f97316", "#8b5cf6"];
