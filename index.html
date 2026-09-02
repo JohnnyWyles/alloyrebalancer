@@ -567,8 +567,9 @@ async function bankBalance(chainId, addr, denom) {
 async function getAccount(chainId, addr) {
   const j = await lcdGet(chainId, `/cosmos/auth/v1beta1/accounts/${addr}`);
   if (!j.account) throw new Error(`account ${addr} not found on ${chainId} (never funded?)`);
-  let a = j.account; for (let i = 0; i < 4 && a.base_account; i++) a = a.base_account;
-  if (a.account_number === undefined) throw new Error("unrecognised account shape");
+  // BaseAccount is flat; module, Eth and vesting accounts nest it (vesting under base_vesting_account.base_account)
+  let a = j.account; for (let i = 0; i < 4 && a.account_number === undefined; i++) a = a.base_account || a.base_vesting_account || {};
+  if (a.account_number === undefined) throw new Error(`unrecognised account shape ${j.account["@type"] || ""}`);
   return { accountNumber: a.account_number, sequence: a.sequence ?? "0" };
 }
 async function smartQuery(contract, q) {
