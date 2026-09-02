@@ -22,7 +22,16 @@ const MASK = HTML.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:[^"\\\n]|\\.)*"|'(?:[
 function extractFrom(startRe, name) {
   const m = startRe.exec(HTML);
   if (!m) throw new Error(`cannot find ${name} in index.html`);
-  let k = MASK.indexOf("{", m.index), depth = 0;
+  // skip the parameter list first: a default parameter like `out = {}` would otherwise
+  // end the brace matching inside the signature
+  let start = m.index;
+  const paren = MASK.indexOf("(", m.index);
+  if (paren >= 0 && paren < MASK.indexOf("{", m.index)) {
+    let pd = 0, i = paren;
+    for (; i < MASK.length; i++) { if (MASK[i] === "(") pd++; else if (MASK[i] === ")") { pd--; if (!pd) break; } }
+    start = i;
+  }
+  let k = MASK.indexOf("{", start), depth = 0;
   while (k < MASK.length) {
     if (MASK[k] === "{") depth++;
     else if (MASK[k] === "}") { depth--; if (!depth) break; }
@@ -37,7 +46,7 @@ const arrow = name => { const m = new RegExp(`^const ${name}\\s*=`, "m").exec(HT
 const FNS = ["uint64Value","varint","cat","tag","bytesF","strF","u64F","Height","MsgTransfer","MsgExecuteContract","SwapAmountInRoute","MsgSwapExactAmountIn","MsgSendToEth","peggySendCalldata",
              "parseAmount","fmtUnits","fmt2","withinLoss",
              "b32Polymod","b32HrpExpand","bech32Decode","bech32Encode","convertBits","bech32Rehrp","bech32ToHex",
-             "skipMsgToAny","swapOps","checkCommon","checkSwap","checkSwapAndAction","parseJsonField","transferOp","abiWords","abiDyn","checkEvmTx","approvalPlan","decodeAxelarPayload","checkHookTransfer","singleCosmosMsg","checkAxelarMemo","addrsMismatch",
+             "skipMsgToAny","swapOps","eip712MsgTypes","eip712Types","TxBody","checkCommon","checkSwap","checkSwapAndAction","parseJsonField","transferOp","abiWords","abiDyn","checkEvmTx","approvalPlan","decodeAxelarPayload","checkHookTransfer","singleCosmosMsg","checkAxelarMemo","addrsMismatch",
              "describeLimiter","variantConfigs",
              "nomicEncodeIbc","scriptNum","pushData","nomicRedeemScript","nomicDepositAddress","sameSigset","chainflipMinPriceX128","checkChainflipChannel",
              "checkOrbiterMemo","validateNobleToHub","validateFreeExitToHub","validateHubToInj","validateInjToHub","validateHubToNoble","validateInjToAll","validateNobleToAll",
@@ -45,13 +54,13 @@ const FNS = ["uint64Value","varint","cat","tag","bytesF","strF","u64F","Height",
 const src = [
   "const te = new TextEncoder();",
   extractFrom(/const K = /, "K"), extractFrom(/const GAS = /, "GAS"),
-  arrow("U64_MAX"), arrow("B32"), arrow("Any"), arrow("sortedJson"), arrow("Coin"), arrow("pad32"), arrow("sameAddr"), arrow("hexToBytes"), arrow("opKind"), arrow("nearly"), arrow("limiterDenom"), arrow("bridgeFee"),
+  arrow("U64_MAX"), arrow("B32"), arrow("Any"), arrow("sortedJson"), arrow("EIP712_DOMAIN"), arrow("EIP712_UINT64"), arrow("EIP712_MSG_TYPES"), arrow("eip712TypeName"), arrow("Coin"), arrow("pad32"), arrow("sameAddr"), arrow("hexToBytes"), arrow("opKind"), arrow("nearly"), arrow("limiterDenom"), arrow("bridgeFee"),
   arrow("OPC"), arrow("sha256"), arrow("nomicWithdrawMemo"), arrow("abiStr"), arrow("wordEq"),
   "const esc = s => String(s).replace(/[&<>\\\"']/g, c => ({\"&\":\"&amp;\",\"<\":\"&lt;\",\">\":\"&gt;\",'\"':\"&quot;\",\"'\":\"&#39;\"}[c]));",
   "const unb64 = s => Uint8Array.from(Buffer.from(s, 'base64'));",
   ...FNS.map(fn),
   arrow("validateAxlUnwrap"), arrow("validateEthToAll"),
-  `export {K,GAS,${FNS.join(",")},Any,Coin,sortedJson,pad32,sameAddr,nearly,limiterDenom,validateAxlUnwrap,validateEthToAll,nomicWithdrawMemo};`,
+  `export {K,GAS,${FNS.join(",")},Any,Coin,sortedJson,EIP712_DOMAIN,eip712TypeName,pad32,sameAddr,nearly,limiterDenom,validateAxlUnwrap,validateEthToAll,nomicWithdrawMemo};`,
 ].join("\n");
 const tmp = path.join(process.cwd(), ".test-extract.mjs");
 fs.writeFileSync(tmp, src);
@@ -512,6 +521,69 @@ for (const name of ["signAndBroadcast", "runCycle", "fundGas", "sendSkipEvm", "c
 }
 
 fs.unlinkSync(tmp);
+
+
+/* ---------- EIP-712 typed data (Injective Ledger signing) ---------- */
+{
+  const xferValue = { source_port: "transfer", source_channel: "channel-8", token: { denom: "peggy0xd", amount: "10000000" },
+    sender: "inj1x", receiver: "osmo1y", timeout_height: { revision_number: "1", revision_height: "100" }, timeout_timestamp: "123", memo: "hi" };
+  const t1 = M.eip712MsgTypes(xferValue);
+  ok(M.sortedJson(t1.MsgValue) === M.sortedJson([
+    { name: "source_port", type: "string" }, { name: "source_channel", type: "string" }, { name: "token", type: "TypeToken" },
+    { name: "sender", type: "string" }, { name: "receiver", type: "string" }, { name: "timeout_height", type: "TypeTimeoutHeight" },
+    { name: "timeout_timestamp", type: "uint64" }, { name: "memo", type: "string" }]), "MsgTransfer MsgValue types in proto field order");
+  ok(M.sortedJson(t1.TypeToken) === M.sortedJson([{ name: "denom", type: "string" }, { name: "amount", type: "string" }]), "TypeToken");
+  ok(M.sortedJson(t1.TypeTimeoutHeight) === M.sortedJson([{ name: "revision_number", type: "uint64" }, { name: "revision_height", type: "uint64" }]), "TypeTimeoutHeight uses uint64 (chain reflection walk)");
+  const noMemo = M.eip712MsgTypes({ ...xferValue, memo: "" });
+  ok(!noMemo.MsgValue.some(f => f.name === "memo"), "empty memo omitted from types, matching the chain's walk");
+
+  const se = M.eip712MsgTypes({ sender: "inj1x", eth_dest: "0xdead", amount: { denom: "peggy0xd", amount: "5" }, bridge_fee: { denom: "peggy0xd", amount: "5" } });
+  ok(M.sortedJson(se.MsgValue.map(f => f.type)) === M.sortedJson(["string", "string", "TypeAmount", "TypeBridgeFee"]) && !!se.TypeBridgeFee, "MsgSendToEth types: TypeAmount / TypeBridgeFee");
+  ok(M.eip712TypeName("bridge_fee", "MsgValue") === "TypeBridgeFee" && M.eip712TypeName("foo_bar", "TypeToken") === "TypeTokenFooBar", "type names match the chain's sanitizeTypedef");
+
+  const all = M.eip712Types(xferValue);
+  ok(M.sortedJson(all.Tx.map(f => f.name)) === M.sortedJson(["account_number", "chain_id", "fee", "memo", "msgs", "sequence", "timeout_height"]), "root Tx type matches the chain's fixed root types");
+  ok(all.EIP712Domain.length === 5 && M.EIP712_DOMAIN.verifyingContract === "cosmos" && M.EIP712_DOMAIN.chainId === "0x1" && M.EIP712_DOMAIN.name === "Injective Web3", "domain pinned to Injective Web3 / chainId 0x1 / cosmos");
+
+  ok(hex(M.TxBody([Uint8Array.of(1, 2, 3)], "", "5", [Uint8Array.of(9)])) === "0a030102031805fa3f0109", "TxBody encodes timeout_height (field 3) and extension_options (field 1023)");
+  ok(hex(M.TxBody([Uint8Array.of(1)], "")) === "0a0101", "TxBody without timeout or extensions is unchanged");
+}
+{
+  const sab = fn("signAndBroadcast");
+  ok((HTML.match(/experimentalSignEIP712CosmosTx_v0/g) || []).length === 1 && /ledger712/.test(sab), "one EIP-712 call site, behind the Injective Ledger branch");
+  ok(/sig\.length !== 65/.test(sab) && /ExtensionOptionsWeb3Tx/.test(sab) && /SignerInfo\(pkAny, 127,/.test(sab), "65-byte signature, web3 extension, sign mode 127");
+  ok(/timeout_height\?\.revision_number/.test(sab), "IBC transfers without a full timeout height are refused on the EIP-712 path");
+  ok(/s\.signed\.timeout_height !== txTimeout/.test(sab), "a wallet-altered timeout is refused before broadcast");
+  ok(/osmoTimeoutHeight\(900\)/.test(HTML) && (HTML.match(/osmoTimeoutHeight\(/g) || []).length >= 3, "Ledger IBC transfers from Injective get a nonzero timeout height (P4 and A3)");
+}
+
+
+/* ---------- EIP-712 against Injective's canonical generator ----------
+   test-fixtures/eip712-golden-*.json hold real responses from the web3gw PrepareEip712 endpoint,
+   which runs the chain's own typed-data code. Our generator must agree exactly on types, domain
+   and the amino message; the Tx-level scaffolding is checked field by field (the gw renders
+   timeout_height as a JSON number and computes its own fee, so those are normalised). */
+{
+  const build = {
+    "eip712-golden-transfer": v => M.MsgTransfer({ sourcePort: v.source_port, sourceChannel: v.source_channel, token: v.token,
+      sender: v.sender, receiver: v.receiver, timeoutHeight: { revisionNumber: v.timeout_height.revision_number, revisionHeight: v.timeout_height.revision_height },
+      timeoutTimestamp: v.timeout_timestamp, memo: v.memo || "" }).amino,
+    "eip712-golden-transfer-memo": v => M.MsgTransfer({ sourcePort: v.source_port, sourceChannel: v.source_channel, token: v.token,
+      sender: v.sender, receiver: v.receiver, timeoutHeight: { revisionNumber: v.timeout_height.revision_number, revisionHeight: v.timeout_height.revision_height },
+      timeoutTimestamp: v.timeout_timestamp, memo: v.memo || "" }).amino,
+    "eip712-golden-sendtoeth": v => M.MsgSendToEth({ sender: v.sender, ethDest: v.eth_dest, amount: v.amount, bridgeFee: v.bridge_fee }).amino,
+  };
+  for (const fx of Object.keys(build)) {
+    const g = FIX(fx + ".json"), resp = g.response;
+    const { ["@type"]: _t, ...reqValue } = g.request.msgs[0];
+    const amino = build[fx](reqValue);
+    ok(M.sortedJson(M.eip712Types(amino.value)) === M.sortedJson(resp.types), `${fx}: generated types match the chain's generator`);
+    ok(M.sortedJson(M.EIP712_DOMAIN) === M.sortedJson(resp.domain) && resp.primaryType === "Tx", `${fx}: domain and primary type match`);
+    ok(M.sortedJson(amino) === M.sortedJson(resp.message.msgs[0]), `${fx}: amino form matches the canonical message`);
+    ok(resp.message.chain_id === "injective-1" && resp.message.memo === "" && String(resp.message.timeout_height) === g.request.timeout_height
+       && resp.message.account_number === g.request.account_number && resp.message.sequence === g.request.sequence, `${fx}: sign-doc scaffolding fields`);
+  }
+}
 
 /* ---------- amino forms (Ledger signing) ---------- */
 {

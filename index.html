@@ -414,7 +414,7 @@ function peggySendCalldata(token, destinationHex, amount) {
   const head = K.PEGGY_SEND_SELECTOR + pad32(token) + pad32(destinationHex) + BigInt(amount).toString(16).padStart(64, "0") + (0x80).toString(16).padStart(64, "0");
   return "0x" + head + "0".repeat(64);   // offset 0x80 -> string length 0, no bytes
 }
-function TxBody(anys, memo){ let b=new Uint8Array(0); for(const a of anys) b=cat(b,bytesF(1,a)); if(memo) b=cat(b,strF(2,memo)); return b; }
+function TxBody(anys, memo, timeoutHeight, extAnys){ let b=new Uint8Array(0); for(const a of anys) b=cat(b,bytesF(1,a)); if(memo) b=cat(b,strF(2,memo)); if(BigInt(timeoutHeight||0)!==0n) b=cat(b,u64F(3,timeoutHeight)); for(const e of extAnys||[]) b=cat(b,bytesF(1023,e)); return b; }
 function Fee(amts,gas){ let f=new Uint8Array(0); for(const c of amts) f=cat(f,bytesF(1,Coin(c.denom,c.amount))); return cat(f,u64F(2,gas)); }
 function SignerInfo(pkAny,mode,seq){ let s=new Uint8Array(0); if(pkAny)s=cat(s,bytesF(1,pkAny)); s=cat(s,bytesF(2,bytesF(1,u64F(1,mode)))); if(BigInt(seq)!==0n)s=cat(s,u64F(3,seq)); return s; }
 function AuthInfo(sis,fee){ let a=new Uint8Array(0); for(const si of sis) a=cat(a,bytesF(1,si)); return cat(a,bytesF(2,fee)); }
@@ -1193,13 +1193,13 @@ async function connectKeplr() {
   W.osmo = ko.bech32Address; W.noble = kn.bech32Address; W.ledger = !!ko.isNanoLedger;
   if (bech32Rehrp(W.osmo, "noble") !== W.noble) throw new Error(`Keplr's Noble account ${W.noble} is not the same key as its Osmosis account`);
   W.nobleHex = bech32ToHex(W.noble); W.hub = bech32Rehrp(W.osmo, "cosmos");   // same key, coin type 118
-  // Injective is optional: its key differs (ethsecp256k1), and with a Ledger Keplr signs it only via
-  // EIP-712, which this page does not implement. Routes that sign on Injective are disabled without it.
+  // Injective is optional (its key is ethsecp256k1 and can be missing). With a Ledger, signing goes
+  // through Keplr's EIP-712 flow; a failure to fetch the key still just disables Injective routes.
   W.inj = W.injHex = null;
   try {
     await window.keplr.enable(["injective-1"]);
     const ki = await window.keplr.getKey("injective-1");
-    if (ki.isNanoLedger) throw new Error("Injective Ledger signing is EIP-712, which this page does not implement");
+    if (ki.isNanoLedger) log("Injective (Keplr): Ledger key; signing goes via EIP-712 typed data (first live run pending)");
     const hexInj = bech32ToHex(ki.bech32Address);
     if (ki.ethereumHexAddress && !sameAddr(ki.ethereumHexAddress, hexInj)) throw new Error(`Keplr reports ${ki.ethereumHexAddress} for Injective but the bech32 decodes to ${hexInj}`);
     W.inj = ki.bech32Address; W.injHex = hexInj;
@@ -1393,6 +1393,49 @@ async function updateQuotes() {
 }
 const planKey = () => { const rd = $("reduce").value, inc = $("increase").value; return Object.keys(PLANS).find(k => PLANS[k].alloy === ALLOY && PLANS[k].reduce === rd && PLANS[k].increase === inc) || null; };
 
+/* ---------------- EIP-712 typed data for Injective Ledger signing ----------------
+   A Ledger reaches Injective through Keplr's Ethereum-app EIP-712 flow: the amino sign doc is wrapped as
+   typed data, the tx carries ExtensionOptionsWeb3Tx and sign mode LEGACY_AMINO_JSON, and the chain
+   re-derives the same typed data from the broadcast tx. Type generation mirrors the chain's reflection
+   walk: names like TypeToken / TypeTimeoutHeight, uint64 for the three number-in-string fields, empty
+   strings omitted. Only single-type txs of the two message types below are ever signed this way here. */
+const EIP712_DOMAIN = { name: "Injective Web3", version: "1.0.0", chainId: "0x1", verifyingContract: "cosmos", salt: "0" };
+const EIP712_UINT64 = ["timeout_timestamp", "revision_number", "revision_height"];
+const EIP712_MSG_TYPES = ["cosmos-sdk/MsgTransfer", "peggy/MsgSendToEth"];
+const eip712TypeName = (prop, parent) => "Type" + (parent === "MsgValue" ? "" : parent.replace(/^Type/, "")) + prop.split("_").map(w => w[0].toUpperCase() + w.slice(1)).join("");
+function eip712MsgTypes(value, primaryType = "MsgValue", out = {}) {
+  const fields = [];
+  for (const [name, v] of Object.entries(value)) {
+    if (typeof v === "string") { if (v !== "") fields.push({ name, type: EIP712_UINT64.includes(name) ? "uint64" : "string" }); }
+    else if (Array.isArray(v)) {
+      if (!v.length) throw new Error(`eip712: empty array field ${name} cannot be typed`);
+      if (typeof v[0] === "string") fields.push({ name, type: "string[]" });
+      else { const t = eip712TypeName(name, primaryType); fields.push({ name, type: t + "[]" }); eip712MsgTypes(v[0], t, out); }
+    }
+    else if (v && typeof v === "object") { const t = eip712TypeName(name, primaryType); fields.push({ name, type: t }); eip712MsgTypes(v, t, out); }
+    else throw new Error(`eip712: field ${name} has unsupported type ${typeof v}`);
+  }
+  out[primaryType] = fields;
+  return out;
+}
+function eip712Types(msgValue) {
+  return {
+    EIP712Domain: [{ name: "name", type: "string" }, { name: "version", type: "string" }, { name: "chainId", type: "uint256" }, { name: "verifyingContract", type: "string" }, { name: "salt", type: "string" }],
+    Tx: [{ name: "account_number", type: "string" }, { name: "chain_id", type: "string" }, { name: "fee", type: "Fee" }, { name: "memo", type: "string" }, { name: "msgs", type: "Msg[]" }, { name: "sequence", type: "string" }, { name: "timeout_height", type: "string" }],
+    Fee: [{ name: "amount", type: "Coin[]" }, { name: "gas", type: "string" }],
+    Coin: [{ name: "denom", type: "string" }, { name: "amount", type: "string" }],
+    Msg: [{ name: "type", type: "string" }, { name: "value", type: "MsgValue" }],
+    ...eip712MsgTypes(msgValue),
+  };
+}
+/* On this path an IBC transfer's own timeout_height must have BOTH revision fields nonzero: the chain's
+   amino encoding omits zero fields but its type walk still declares them, and its EIP-712 encoder
+   refuses missing values. Destination is always Osmosis here (revision 1). */
+async function osmoTimeoutHeight(blocks) {
+  const j = await lcdGet("osmosis-1", "/cosmos/base/tendermint/v1beta1/blocks/latest");
+  return { revisionNumber: "1", revisionHeight: String(Number(j.block.header.height) + blocks) };
+}
+
 /* ---------------- cosmos sign + broadcast (SIGN_MODE_DIRECT; legacy amino when the key is a Ledger) ---------------- */
 function pubkeyTypeUrl(chainId, algo) {
   if (chainId === "injective-1") return "/injective.crypto.v1beta1.ethsecp256k1.PubKey";
@@ -1410,7 +1453,14 @@ async function signAndBroadcast(chainId, signer, anys, onNote, onHash) {
   if (k.bech32Address !== signer) throw new Error(`Keplr's ${chainId} account is ${k.bech32Address}, the message was built for ${signer}`);
   const acc = await getAccount(chainId, signer);
   const pkAny = Any(pubkeyTypeUrl(chainId, k.algo), bytesF(1, k.pubKey));
-  const body = TxBody(anys, "");
+  const ledger712 = k.isNanoLedger && chainId === "injective-1";
+  let txTimeout = "0", extAnys = [];
+  if (ledger712) {
+    const latest = await lcdGet("injective-1", "/cosmos/base/tendermint/v1beta1/blocks/latest");
+    txTimeout = String(Number(latest.block.header.height) + 120);
+    extAnys = [Any("/injective.types.v1beta1.ExtensionOptionsWeb3Tx", u64F(1, 1))];
+  }
+  const body = TxBody(anys, "", txTimeout, extAnys);
   const simAI = AuthInfo([SignerInfo(pkAny, 1, acc.sequence)], Fee([{ denom: C.feeDenom, amount: "0" }], "400000"));
   let sim, simEp;
   for (const ep of eps) { try { sim = await lcdPost(ep, "/cosmos/tx/v1beta1/simulate", { tx_bytes: b64(TxRaw(body, simAI, [new Uint8Array(65)])) }); simEp = ep; break; } catch (e) { onNote(`simulate on ${ep} failed: ${e.message}`); if (/insufficient|invalid|unauthorized|not found|failed to execute|slippage|min/i.test(e.message)) throw e; } }
@@ -1419,10 +1469,21 @@ async function signAndBroadcast(chainId, signer, anys, onNote, onHash) {
   const gas = Math.ceil(used * 1.4), fee = String(Math.ceil(gas * await gasPriceOf(chainId)));
   onNote(`gas ${gas}, fee ${fmtUnits(fee, C.feeDec)} ${C.feeSym}`);
   let raw;
-  if (k.isNanoLedger) {
+  if (ledger712) {
+    const aminoMsgs = anys.map(a => { if (!a.amino) throw new Error("this message type has no amino form and cannot be signed with a Ledger"); return a.amino; });
+    if (new Set(aminoMsgs.map(mv => mv.type)).size !== 1 || !EIP712_MSG_TYPES.includes(aminoMsgs[0].type)) throw new Error(`EIP-712 signing here supports single-type txs of ${EIP712_MSG_TYPES.join(" / ")} only, got ${aminoMsgs.map(mv => mv.type).join(", ")}`);
+    for (const am of aminoMsgs) if (am.type === "cosmos-sdk/MsgTransfer" && (!am.value.timeout_height?.revision_number || !am.value.timeout_height?.revision_height)) throw new Error("EIP-712 IBC transfers need a fully nonzero timeout height (the chain's encoder refuses omitted zero fields)");
+    const doc = { chain_id: chainId, timeout_height: txTimeout, account_number: String(acc.accountNumber), sequence: String(acc.sequence),
+      fee: { amount: [{ denom: C.feeDenom, amount: fee }], gas: String(gas) }, msgs: aminoMsgs, memo: "" };
+    onNote("confirm on the Ledger (EIP-712 typed data; the Ethereum app may need blind signing enabled)");
+    const s = await window.keplr.experimentalSignEIP712CosmosTx_v0(chainId, signer, { types: eip712Types(aminoMsgs[0].value), domain: EIP712_DOMAIN, primaryType: "Tx" }, doc);
+    if (sortedJson(s.signed.msgs) !== sortedJson(aminoMsgs) || s.signed.memo || s.signed.timeout_height !== txTimeout) throw new Error("the wallet altered the messages, memo or timeout while signing; refusing to broadcast");
+    const sig = unb64(s.signature.signature);
+    if (sig.length !== 65) throw new Error(`EIP-712 signature is ${sig.length} bytes, expected 65 (R||S||V)`);
+    raw = TxRaw(body, AuthInfo([SignerInfo(pkAny, 127, s.signed.sequence)], Fee(s.signed.fee.amount, s.signed.fee.gas)), [sig]);
+  } else if (k.isNanoLedger) {
     // A Ledger signs only the legacy amino JSON. The broadcast tx still carries the proto messages; the chain
     // re-derives the amino doc from them at verification, so the m.amino forms must round-trip exactly.
-    if (chainId === "injective-1") throw new Error("a Ledger cannot sign on Injective from this page (Injective Ledger signing is EIP-712, not implemented here)");
     const aminoMsgs = anys.map(a => { if (!a.amino) throw new Error("this message type has no amino form and cannot be signed with a Ledger"); return a.amino; });
     onNote("confirm on the Ledger (amino); large messages may need Expert mode on the device");
     const s = await window.keplr.signAmino(chainId, signer, { chain_id: chainId, account_number: String(acc.accountNumber), sequence: String(acc.sequence),
@@ -1602,6 +1663,10 @@ const STAGE = {
     mark({ before: before.toString(), expected: v.amountOut });
     if (!await confirmSheet({ title: "Sign on Injective", rows: [["You send", `${fmtUnits(amountIn)} USDC.inj`], ["Via", `IBC ${K.INJ_TO_OSMO} → Osmosis, hook swaps on pool ${K.POOL}`], ["Arrives as", `${fmtUnits(v.amountOut)} allUSDC`],
       ["To", W.osmo], ["Hook contract", K.ENTRY_POINT], ["Estimated", `${v.secs || "?"} s`]] })) throw new Error("cancelled");
+    if (W.ledger) {   // EIP-712 transfers need both revision fields nonzero; Skip sets only the timestamp
+      const m0 = res.txs[0].cosmos_tx.msgs[0], j0 = JSON.parse(m0.msg), h = await osmoTimeoutHeight(900);
+      j0.timeout_height = { revision_number: h.revisionNumber, revision_height: h.revisionHeight }; m0.msg = JSON.stringify(j0);
+    }
     const hash = await signAndBroadcast("injective-1", W.inj, res.txs[0].cosmos_tx.msgs.map(skipMsgToAny), note, h => mark({ hash: h }));
     note(`tx ${hash}`); await trackToCompletion("injective-1", hash, s => note("Skip: " + s));
     return waitArrival(() => bankBalance("osmosis-1", W.osmo, K.ALL), before, v.amountOut, "allUSDC")
@@ -1776,7 +1841,8 @@ STAGE.P4 = { title: "Injective: USDT.eth.inj → Osmosis", who: "Keplr, Injectiv
   const before = await bankBalance("osmosis-1", W.osmo, PG.inj);
   mark({ before: before.toString(), expected: amountIn });
   const timeout = ((BigInt(Date.now()) + 15n * 60n * 1000n) * 1000000n).toString();
-  const anys = [Any("/ibc.applications.transfer.v1.MsgTransfer", MsgTransfer({ sourcePort: "transfer", sourceChannel: K.INJ_TO_OSMO, token: { denom: PG.injDenom, amount: amountIn }, sender: W.inj, receiver: W.osmo, timeoutHeight: {}, timeoutTimestamp: timeout, memo: "" }))];
+  const tHeight = W.ledger ? await osmoTimeoutHeight(900) : {};
+  const anys = [Any("/ibc.applications.transfer.v1.MsgTransfer", MsgTransfer({ sourcePort: "transfer", sourceChannel: K.INJ_TO_OSMO, token: { denom: PG.injDenom, amount: amountIn }, sender: W.inj, receiver: W.osmo, timeoutHeight: tHeight, timeoutTimestamp: timeout, memo: "" }))];
   if (!await confirmSheet({ title: "Sign on Injective", rows: [["You send", `${fmtUnits(amountIn, PG.dec)} USDT over IBC ${K.INJ_TO_OSMO}`], ["To", W.osmo], ["Arrives as", "USDT.eth.inj on Osmosis"], ["Timeout", "15 minutes, then refunded"]] })) throw new Error("cancelled");
   const hash = await signAndBroadcast("injective-1", W.inj, anys, note, h => mark({ hash: h }));
   note(`tx ${hash}; waiting for the IBC relay`);

@@ -10,12 +10,16 @@ while your alloy balance stays the same, minus gas and bridge fees. Keplr signs 
 Injective and Noble directly, Avalanche, Ethereum and Injective EVM through Keplr's EVM provider, and
 Bitcoin through Keplr's Bitcoin provider.
 
-Ledger keys behind Keplr are supported on Osmosis and Noble: the page detects the hardware key and signs
-those transactions as legacy amino JSON (the only mode a Ledger Cosmos app accepts), with the device
-possibly needing Expert mode for the larger contract messages. Routes that sign on Injective are disabled
-for Ledger keys, because Injective's Ledger signing is EIP-712, which this page does not implement; the
-Bitcoin routes also need a mnemonic-backed account (Keplr has no Ledger Bitcoin provider). EVM signatures
-go through Keplr's EVM provider either way. The amino path has not yet been exercised with a live device.
+Ledger keys behind Keplr are supported. On Osmosis and Noble the page signs legacy amino JSON (the only
+mode the Ledger Cosmos app accepts; the device may need Expert mode for larger contract messages). On
+Injective it signs EIP-712 typed data through the Ledger Ethereum app (Keplr's
+`experimentalSignEIP712CosmosTx_v0`): the amino sign doc is wrapped as typed data, the transaction carries
+`ExtensionOptionsWeb3Tx` with `typedDataChainID` 1, and IBC transfers get a fully nonzero timeout height
+because the chain's typed-data encoder refuses omitted zero fields. The generated typed data is tested
+byte-for-byte against Injective's own web3gw `PrepareEip712` responses (`test-fixtures/eip712-golden-*`).
+The Ethereum app may need blind signing enabled. The Bitcoin routes still need a mnemonic-backed account
+(Keplr has no Ledger Bitcoin provider). EVM signatures go through Keplr's EVM provider either way.
+Neither hardware path has been exercised with a live device yet.
 
 ## Files
 
