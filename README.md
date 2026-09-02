@@ -19,7 +19,8 @@ because the chain's typed-data encoder refuses omitted zero fields. The generate
 byte-for-byte against Injective's own web3gw `PrepareEip712` responses (`test-fixtures/eip712-golden-*`).
 The Ethereum app may need blind signing enabled. The Bitcoin routes still need a mnemonic-backed account
 (Keplr has no Ledger Bitcoin provider). EVM signatures go through Keplr's EVM provider either way.
-Neither hardware path has been exercised with a live device yet.
+A full USDC.noble -> USDC.inj loop has run on a live Ledger (amino on Osmosis, EVM on Avalanche, EIP-712
+on Injective); the Peggy `MsgSendToEth` leg is the one Ledger signature not yet exercised.
 
 ## Files
 
