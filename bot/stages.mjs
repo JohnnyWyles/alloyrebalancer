@@ -26,7 +26,10 @@ async function track(chain, hash, note) {
   catch (e) { if (/^Skip reports/.test(e.message)) throw e; note(`Skip tracking unavailable (${e.message}); watching the balance instead`); }
 }
 const ARRIVAL_POLLS = 360;   // x 5 s = 30 minutes after Skip reports completion (or stops answering)
-const refusedHalt = v => halt("route refused:\n  - " + v.errs.join("\n  - "));
+/* A refused route has signed nothing, so the runner asks Skip again (Skip sometimes answers with a detour it does not
+   offer a minute later). The validator still decides every answer; a refusal that keeps coming back halts. */
+export const requote = msg => Object.assign(new Error(msg), { requote: true });
+const refused = v => requote("route refused: " + v.errs.join("; "));
 
 const avaxUsdc = ctx => erc20BalanceOf(AVAX, H.usdc, ctx.W.evm);
 const injUsdc = ctx => bankBalance("injective-1", ctx.W.inj, K.INJ_ERC20);
@@ -56,7 +59,7 @@ export const STAGES = {
       await needRateRoom(K.NOBLE, "out", K.OSMO_TO_NOBLE, amountIn, ctx);
       const before = await avaxUsdc(ctx);
       const res = await skipRoute(K.NOBLE, "osmosis-1", H.usdc, AVAX, amountIn, { "osmosis-1": ctx.W.osmo, "noble-1": ctx.W.noble, [AVAX]: ctx.W.evm });
-      const v = validateNobleToHub(res, { osmo: ctx.W.osmo, evm: ctx.W.evm, amountIn, hub: AVAX }); if (!v.ok) throw refusedHalt(v);
+      const v = validateNobleToHub(res, { osmo: ctx.W.osmo, evm: ctx.W.evm, amountIn, hub: AVAX }); if (!v.ok) throw refused(v);
       Object.assign(st, { before: before.toString(), expected: v.amountOut });
       const anys = [
         Any("/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn", MsgSwapExactAmountIn({ sender: ctx.W.osmo, routes: [{ poolId: K.POOL, tokenOutDenom: K.NOBLE }],
@@ -83,7 +86,7 @@ export const STAGES = {
       if (bal < BigInt(amountIn)) throw halt(`Avalanche USDC balance ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this stage expects`);
       const before = await injUsdc(ctx);
       const res = await skipRoute(H.usdc, AVAX, K.INJ_EVM_USDC, K.INJ_EVM_CHAIN, amountIn, { [AVAX]: ctx.W.evm, [K.INJ_EVM_CHAIN]: ctx.W.injHex });
-      const v = validateHubToInj(res, { evm: ctx.W.evm, injHex: ctx.W.injHex, amountIn, hub: AVAX }); if (!v.ok) throw refusedHalt(v);
+      const v = validateHubToInj(res, { evm: ctx.W.evm, injHex: ctx.W.injHex, amountIn, hub: AVAX }); if (!v.ok) throw refused(v);
       Object.assign(st, { before: before.toString(), expected: v.amountOut });
       const tx = res.txs[0].evm_tx, eo = { ...ctx.signOpts, maxFeeGwei: ctx.cfg.avax_max_fee_gwei };
       for (const a of v.approvals) {
@@ -114,10 +117,10 @@ export const STAGES = {
       await needRateRoom(K.INJ_IBC, "in", K.OSMO_TO_INJ, amountIn, ctx);
       const before = await osmoAll(ctx);
       const res = await skipRoute(K.INJ_ERC20, "injective-1", K.ALL, "osmosis-1", amountIn, { "injective-1": ctx.W.inj, "osmosis-1": ctx.W.osmo });
-      const v = validateInjToAll(res, { inj: ctx.W.inj, osmo: ctx.W.osmo, amountIn }); if (!v.ok) throw refusedHalt(v);
-      if (BigInt(v.amountOut || 0) < BigInt(amountIn)) throw halt(`Skip quotes ${fmtUnits(v.amountOut)} allUSDC for ${fmtUnits(amountIn)} USDC.inj through a 1:1 transmuter`);
+      const v = validateInjToAll(res, { inj: ctx.W.inj, osmo: ctx.W.osmo, amountIn }); if (!v.ok) throw refused(v);
+      if (BigInt(v.amountOut || 0) < BigInt(amountIn)) throw requote(`Skip quotes ${fmtUnits(v.amountOut)} allUSDC for ${fmtUnits(amountIn)} USDC.inj through a 1:1 transmuter`);
       tightenMinAsset(res, amountIn);
-      const v2 = validateInjToAll(res, { inj: ctx.W.inj, osmo: ctx.W.osmo, amountIn }); if (!v2.ok) throw refusedHalt(v2);
+      const v2 = validateInjToAll(res, { inj: ctx.W.inj, osmo: ctx.W.osmo, amountIn }); if (!v2.ok) throw refused(v2);
       Object.assign(st, { before: before.toString(), expected: amountIn, injBefore: bal.toString() });
       note(`IBC ${fmtUnits(amountIn)} USDC.inj to Osmosis, hook swap with min_asset ${fmtUnits(amountIn)} allUSDC`);
       return signAndBroadcast("injective-1", ctx.wallet, res.txs[0].cosmos_tx.msgs.map(skipMsgToAny), note, onSigned, ctx.signOpts);

@@ -86,7 +86,7 @@ function acknowledgeHalt(s) {
   if (!s.haltedAt) return;
   log(`halt from ${s.haltedAt} acknowledged`);
   const st = s.cycle && s.cycle.stages[ORDER[s.cycle.idx]];
-  if (st && !st.tx) { st.signed = 0; st.retryAfter = undefined; }
+  if (st && !st.tx) { st.signed = 0; st.requotes = 0; st.retryAfter = undefined; }
   s.haltedAt = undefined; saveState(s);
 }
 
@@ -133,9 +133,19 @@ async function tick(ctx) {
     else if (pending && Date.now() - pending.at < 45 * 60000) { saveState(s); return log(`${g.toUpperCase()} refill ${pending.hash} from ${new Date(pending.at).toISOString()} is still in flight; waiting`), "waiting"; }
     if ((s.refillsToday || 0) >= ctx.cfg.max_gas_refills_per_day) throw halt(`${g.toUpperCase()} gas is below its floor and today's ${ctx.cfg.max_gas_refills_per_day} refills are used up`);
     const spend = usdc(ctx.cfg.gas_refill_usdc?.[g] ?? 1);
-    await refillGas(g, ctx, m => log(`[gas ${g}]`, m), async tx => {   // counted at signing, before broadcast
-      s.refillsToday = (s.refillsToday || 0) + 1; s.refillPending = { ...s.refillPending, [g]: { at: Date.now(), hash: tx.hash } }; addFee(s, spend); saveState(s);
-    });
+    try {
+      await refillGas(g, ctx, m => log(`[gas ${g}]`, m), async tx => {   // counted at signing, before broadcast
+        s.refillsToday = (s.refillsToday || 0) + 1; s.refillPending = { ...s.refillPending, [g]: { at: Date.now(), hash: tx.hash } }; addFee(s, spend); saveState(s);
+      });
+    } catch (e) {
+      if (!e.requote || DRY) throw e;
+      // a refused gas route signed nothing: ask again in 10 minutes, halt when it keeps refusing
+      const n = (s.gasRefusals?.[g] || 0) + 1; s.gasRefusals = { ...s.gasRefusals, [g]: n };
+      if (n >= 6) { s.gasRefusals[g] = 0; saveState(s); throw halt(`${g.toUpperCase()} gas route refused ${n} times in a row, latest: ${e.message}`); }
+      s.waitUntil = Date.now() + 10 * 60000; saveState(s);
+      return log(`${e.message}; asking again in 10 minutes (${n}/6)`), "waiting";
+    }
+    if (s.gasRefusals?.[g]) s.gasRefusals[g] = 0;
     if (DRY) continue;   // a dry run goes on to the loop checks as if the refill had landed
     delete s.refillPending[g]; saveState(s);
     return "refilled";

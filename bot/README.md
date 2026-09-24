@@ -33,9 +33,14 @@ When AVAX or INJ falls below its floor the bot buys more with allUSDC through th
 for AVAX (Axelar takes a flat ~$0.11, so 1 allUSDC returned only $0.82 on 2026-09-24) and 1 allUSDC for INJ. A quote
 worth less than `gas_min_value_pct` of what it costs is not bought; the bot waits 30 minutes and asks again.
 
-**It halts rather than guessing.** A refused route, a loss above `max_loop_loss_bps`, an arrival that does not come,
-or funds found outside the alloy all write a `HALTED` file and stop the bot until a person deletes it. A halted loop
-keeps its journal and resumes where it was. A stage is signed again only when the chain proves the previous attempt
+**A refused quote is asked again.** Skip sometimes answers with a detour (for example a three-hop swap instead of
+pool 3497) that it no longer offers a minute later. Nothing is signed for a refused route, so the bot asks again after
+30 s, 1, 2, 4 and 8 minutes, and halts only when six answers in a row are refused. Every answer still goes through the
+page's validator; nothing about what is accepted changes. Gas routes are asked again every 10 minutes, six times.
+
+**It halts rather than guessing.** A route refused six times in a row, a loss above `max_loop_loss_bps`, an arrival
+that does not come, or funds found outside the alloy all write a `HALTED` file and stop the bot until a person deletes
+it. A halted loop keeps its journal and resumes where it was. A stage is signed again only when the chain proves the previous attempt
 never moved funds (failed in block, past its timeout height, rejected at CheckTx), or when an A3 refund is back on
 Injective, and never more than 3 times.
 
@@ -158,7 +163,8 @@ Raise `max_loops_per_day` (about 70 loops fit in a day), then `loop_usdc` once y
 
 Halts you might see and what they mean:
 
-- **route refused**: Skip changed an adapter, recipient or route shape. Check the page and its tests before anything else.
+- **N refused quotes in a row**: Skip has kept offering a route the validator refuses for about 15 minutes, which
+  usually means an adapter, recipient or route shape changed. Check the page and its tests before deleting `HALTED`.
 - **USDC.noble on Osmosis / USDC on Avalanche / USDC.inj on Injective with no loop in flight**: an earlier loop left
   funds outside the alloy. Import the mnemonic into Keplr and use the page's stranded-funds offer, or move them by hand.
 - **rose by only ...**: a bridge leg did not deliver in time. Look up the recorded tx in `state.json`. When the funds

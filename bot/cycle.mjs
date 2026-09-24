@@ -9,8 +9,9 @@ import { P } from "./page.mjs";
 const { fmtUnits } = P;
 const halt = msg => Object.assign(new Error(msg), { halt: true });
 export const MAX_SIGNED_ATTEMPTS = 3;
+export const MAX_REQUOTES = 6;   // consecutive refused quotes per stage before halting: 30 s, 1, 2, 4, 8 min apart (~15 min)
 
-export function makeRunner({ STAGES, ORDER, saveState, log, addFee, retryMs = 120000, refundRetryMs = 300000 }) {
+export function makeRunner({ STAGES, ORDER, saveState, log, addFee, retryMs = 120000, refundRetryMs = 300000, requoteMs = 30000 }) {
  return async function runCycle(ctx, s) {
   const c = s.cycle;
   for (; c.idx < ORDER.length; c.idx++) {
@@ -24,10 +25,17 @@ export function makeRunner({ STAGES, ORDER, saveState, log, addFee, retryMs = 12
         if (st.signed >= MAX_SIGNED_ATTEMPTS) throw halt(`${key} was signed ${st.signed} times without success`);
         note(`${S.title}: sending ${fmtUnits(st.amountIn)}`);
         try {
-          const r = await S.send(ctx, st, note, async tx => { st.tx = tx; st.signed++; save(); });
+          const r = await S.send(ctx, st, note, async tx => { st.tx = tx; st.signed++; st.requotes = 0; save(); });
           if (r?.dryRun) { note("dry run stops here"); return "dry"; }
           if (key === "A1" && r?.fee) addFee(s, r.fee);   // Osmosis fee, paid in allUSDC
         } catch (e) {
+          if (e.requote && !st.tx) {   // nothing was signed: ask again later, halt only if it keeps refusing
+            st.requotes = (st.requotes || 0) + 1;
+            if (st.requotes >= MAX_REQUOTES) throw halt(`${key}: ${st.requotes} refused quotes in a row, latest: ${e.message}`);
+            const delay = requoteMs * 2 ** (st.requotes - 1);
+            note(`${e.message}; asking Skip again in ${Math.round(delay / 1000)} s (${st.requotes}/${MAX_REQUOTES})`);
+            st.retryAfter = Date.now() + delay; save(); continue;
+          }
           if (e.rejectedHash || e.txFailed || e.txExpired) {   // provably never moved funds: forget the tx and retry after a pause
             note(`attempt did not land (${e.message}); retrying in 2 minutes`);
             st.tx = undefined; st.retryAfter = Date.now() + retryMs; save(); continue;

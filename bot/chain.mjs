@@ -97,7 +97,7 @@ export async function refillGas(target, ctx, note, onSigned = async () => {}) {
   if (!v.ok) {
     const valueOnly = v.errs.every(e => /^quote returns only/.test(e));
     throw Object.assign(new Error(`gas route for ${G.sym} ${valueOnly ? "is below the value floor" : "refused"}: ${v.errs.join("; ")}`),
-      valueOnly ? { wait: true, until: Date.now() + 30 * 60000 } : { halt: true });
+      valueOnly ? { wait: true, until: Date.now() + 30 * 60000 } : { requote: true });
   }
   const before = await read();
   note(`buying ${G.sym} gas with ${fmtUnits(G.amount)} allUSDC, about $${v.usd.toFixed(2)} delivered to ${recipient}`);

@@ -12,7 +12,7 @@ import { P } from "./page.mjs";
 import { deriveWallet, SignDoc, signCosmosBytes, signEip1559, rlp } from "./sign.mjs";
 import { deficit, sharePct, quotaRoom, gasSpec } from "./chain.mjs";
 import { tightenMinAsset } from "./stages.mjs";
-import { makeRunner, MAX_SIGNED_ATTEMPTS } from "./cycle.mjs";
+import { makeRunner, MAX_SIGNED_ATTEMPTS, MAX_REQUOTES } from "./cycle.mjs";
 
 const FIX = p => JSON.parse(fs.readFileSync(new URL("../test-fixtures/" + p, import.meta.url), "utf8"));
 let pass = 0, fail = 0;
@@ -128,7 +128,7 @@ function harness(behaviour, cfg = {}) {
     async refunded() { calls.push(`${key}:refunded`); return behaviour[key]?.refunded?.shift?.() ?? false; },
   });
   const STAGES = { A1: mk("A1"), A2: mk("A2"), A3: mk("A3") };
-  const run = makeRunner({ STAGES, ORDER: ["A1", "A2", "A3"], saveState: s => saved.push(JSON.parse(JSON.stringify(s))), log: () => {}, addFee: (s, a) => { s.fees = (BigInt(s.fees || 0) + BigInt(a)).toString(); }, retryMs: 0, refundRetryMs: 0 });
+  const run = makeRunner({ STAGES, ORDER: ["A1", "A2", "A3"], saveState: s => saved.push(JSON.parse(JSON.stringify(s))), log: () => {}, addFee: (s, a) => { s.fees = (BigInt(s.fees || 0) + BigInt(a)).toString(); }, retryMs: 0, refundRetryMs: 0, requoteMs: 0 });
   const ctx = { cfg: { max_loop_loss_bps: 10, ...cfg } };
   return { calls, saved, go: s => run(ctx, s) };
 }
@@ -186,6 +186,19 @@ const fresh = (amt = "100000000") => ({ cycle: { id: "t", amountIn: amt, idx: 0,
   const h = harness({ A1: { send: [Object.assign(new Error("route refused"), { halt: true })] } }), s = fresh();
   await rejects(h.go(s), /route refused/, "a validator refusal halts");
   ok(!s.cycle.stages.A1.tx, "without anything signed");
+}
+
+{
+  const rq = () => Object.assign(new Error("route refused: route: expected exactly one swap hop, got 3"), { requote: true });
+  const h = harness({ A3: { send: [rq(), rq()] } }), s = fresh();
+  ok(await h.go(s) === "done", "a refused A3 quote is asked again and the loop completes");
+  ok(h.calls.filter(c => c === "A3:send").length === 3 && s.history.at(-1).back === "100000000", "two refusals, then the good quote is signed once");
+}
+{
+  const rq = () => Object.assign(new Error("route refused: adapter changed"), { requote: true });
+  const h = harness({ A2: { send: Array.from({ length: 10 }, rq) } }), s = fresh();
+  await rejects(h.go(s), new RegExp(`${MAX_REQUOTES} refused quotes in a row`), "a refusal that keeps coming back halts");
+  ok(h.calls.filter(c => c === "A2:send").length === MAX_REQUOTES && !s.cycle.stages.A2.tx && s.cycle.stages.A2.signed === 0, "after MAX_REQUOTES asks, with nothing signed");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
