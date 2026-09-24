@@ -83,11 +83,16 @@ export async function signAndBroadcast(chainId, wallet, anys, note, onSigned, op
   const used = Number(sim.gas_info?.gas_used || 0); if (!used) throw Object.assign(new Error("node returned no gas_used"), { nothingSent: true });
   const gas = Math.ceil(used * 1.4);
   const fee = chainId === "osmosis-1" ? await osmoFeeInAllUSDC(gas, opts.osmoFeeMargin || 1.5) : String(Math.ceil(gas * await gasPriceOf(chainId)));
+  if (chainId !== "osmosis-1") {   // Osmosis fees come out of the allUSDC reserve; INJ is only refilled between loops
+    const bal = await P.bankBalance(chainId, k.addr, feeDenom);
+    if (bal < BigInt(fee)) throw Object.assign(new Error(`${C.feeSym} balance ${P.fmtUnits(bal, C.feeDec)} cannot pay this tx's fee ${P.fmtUnits(fee, C.feeDec)}. Send ${C.feeSym} to ${k.addr}, then delete HALTED; the stage resumes where it is.`), { halt: true, nothingSent: true });
+  }
   const authInfo = AuthInfo([SignerInfo(pkAny, 1, acc.sequence)], Fee([{ denom: feeDenom, amount: fee }], String(gas)));
   const raw = TxRaw(body, authInfo, [signCosmosBytes(k, SignDoc(body, authInfo, chainId, acc.accountNumber))]);
   const hash = await txHashOf(raw);
   if (opts.dryRun) { note(`dry run: would broadcast ${hash} (gas ${gas}, fee ${fee} ${feeDenom})`); return { hash, fee, feeDenom, dryRun: true }; }
-  await onSigned({ hash, raw: b64(raw), timeoutHeight, chain: chainId, fee, feeDenom });   // recorded before the POST
+  // recorded before the POST; feeAllUSDC lets the caller book the fee in the same durable write as the tx
+  await onSigned({ hash, raw: b64(raw), timeoutHeight, chain: chainId, fee, feeDenom, feeAllUSDC: feeDenom === K.ALL ? fee : "0" });
   note(`broadcasting ${hash} (gas ${gas}, fee ${fee} ${feeDenom === K.ALL ? "uallUSDC" : feeDenom})`);
   // a transport error here propagates without rejectedHash: the journaled tx is resolved by hash / timeout height later
   const res = await lcdPost(simEp, "/cosmos/tx/v1beta1/txs", { tx_bytes: b64(raw), mode: "BROADCAST_MODE_SYNC" });
@@ -171,6 +176,9 @@ export async function evmSend(chainId, wallet, { to, data, value }, note, onSign
   if (maxFee > cap) throw Object.assign(new Error(`${chainId} max fee ${maxFee / 1000000000n} gwei is above the ${opts.maxFeeGwei || 50} gwei cap; waiting`), { nothingSent: true, waitRetry: true });
   const call = { from: k.addr, to, data, value: "0x" + BigInt(value || 0).toString(16) };
   const gas = BigInt(await rpc(chainId, "eth_estimateGas", [call])) * 13n / 10n;
+  // gas is only refilled between loops; running short mid-loop must stop loudly here, not spin on node refusals
+  const have = BigInt(await rpc(chainId, "eth_getBalance", [k.addr, "latest"])), worst = gas * maxFee + BigInt(value || 0);
+  if (have < worst) throw Object.assign(new Error(`${K.EVM[chainId]?.sym || chainId} balance ${Number(have) / 1e18} cannot cover this tx's worst-case ${Number(worst) / 1e18} (gas ${gas} at ${Number(maxFee) / 1e9} gwei). Send ${K.EVM[chainId]?.sym || "gas"} to ${k.addr}, then delete HALTED; the stage resumes where it is.`), { halt: true, nothingSent: true });
   const { raw, hash } = signEip1559(k.priv, { chainId: BigInt(chainId), nonce, maxPriorityFeePerGas: prio, maxFeePerGas: maxFee, gas, to, value: value || 0, data });
   if (opts.dryRun) { note(`dry run: would send ${hash} to ${to} (gas ${gas})`); return { hash, dryRun: true }; }
   await onSigned({ hash, raw, nonce: nonce.toString(), chain: chainId });
@@ -184,6 +192,10 @@ export async function evmSend(chainId, wallet, { to, data, value }, note, onSign
 /* Classifies one eth_sendRawTransaction. Only an explicit JSON-RPC refusal, confirmed by the node not knowing the
    hash, counts as "never sent" ({refused}); a timeout, dropped connection or unparseable reply may have been accepted
    before the response was lost ({ambiguous}), so the caller keeps the journaled tx and resolves it later. */
+/* geth/coreth txpool validation errors: the node evaluated these bytes and will never admit them as they are. Not in
+   the list on purpose: "nonce too low" (may be this very tx, mined) and "replacement transaction underpriced" (another
+   tx with our nonce is pending, which may be this one). */
+const DETERMINISTIC_REFUSAL = /insufficient funds|intrinsic gas too low|max fee per gas less than block base fee|transaction underpriced|exceeds block gas limit|invalid sender|invalid chain id|gas limit reached|max priority fee per gas higher than max fee per gas|oversized data|tip above fee cap|fee cap less than block base fee/i;
 export async function sendRawEvm(chainId, raw, hash, fetchJson = evmPost) {
   let reply, lastTransport = null;
   for (const url of K.EVM[chainId].rpc) {
@@ -194,7 +206,10 @@ export async function sendRawEvm(chainId, raw, hash, fetchJson = evmPost) {
   if (!reply.error) return { accepted: true };
   const msg = String(reply.error.message || JSON.stringify(reply.error));
   if (/already known|known transaction|already imported/i.test(msg)) return { accepted: true };
-  if (/nonce too low/i.test(msg)) return { ambiguous: msg };   // may be this very tx, already mined
+  // Only a deterministic validation refusal of these exact bytes can be forgotten. Provider errors (internal error,
+  // rate limit, upstream timeout, "header not found", ...) come from load-balanced public RPCs and prove nothing, and a
+  // previous URL that failed in transport may have accepted the tx before this one answered.
+  if (lastTransport || /replacement/i.test(msg) || !DETERMINISTIC_REFUSAL.test(msg)) return { ambiguous: lastTransport ? `${msg} (after a transport error on another RPC: ${lastTransport})` : msg };
   try {
     const [byHash, receipt] = await Promise.all([fetchJson(K.EVM[chainId].rpc[0], "eth_getTransactionByHash", [hash]), fetchJson(K.EVM[chainId].rpc[0], "eth_getTransactionReceipt", [hash])]);
     if (byHash.error || receipt.error) return { ambiguous: `${msg} (and the hash lookup failed)` };

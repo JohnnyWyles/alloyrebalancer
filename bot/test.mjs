@@ -12,7 +12,7 @@ import { P } from "./page.mjs";
 import { deriveWallet, SignDoc, signCosmosBytes, signEip1559, rlp, sendRawEvm } from "./sign.mjs";
 import { deficit, sharePct, quotaRoom, gasSpec } from "./chain.mjs";
 import { tightenMinAsset } from "./stages.mjs";
-import { makeRunner, MAX_SIGNED_ATTEMPTS, MAX_REQUOTES } from "./cycle.mjs";
+import { makeRunner, MAX_SIGNED_ATTEMPTS, MAX_REQUOTES, fitsFeeCap, loopLossBound, nextUtcMidnight } from "./cycle.mjs";
 
 const FIX = p => JSON.parse(fs.readFileSync(new URL("../test-fixtures/" + p, import.meta.url), "utf8"));
 let pass = 0, fail = 0;
@@ -73,6 +73,13 @@ ok(bad, "invalid mnemonic refused");
   ok((await go(fake({ error: { message: "insufficient funds for gas * price + value" } }))).refused, "explicit refusal with an unknown hash is a refusal");
   ok((await go(fake({ error: { message: "insufficient funds" } }, { hash: "0xabc" }))).accepted, "explicit error but the node knows the hash: accepted");
   ok((await go(fake({ error: { message: "insufficient funds" } }, new Error("timeout")))).ambiguous, "explicit error but the hash lookup failed: ambiguous");
+  for (const m of ["internal error", "rate limit exceeded", "429 Too Many Requests", "upstream request timeout", "header not found", "replacement transaction underpriced"])
+    ok((await go(fake({ error: { code: -32000, message: m } }))).ambiguous, `provider/pool error "${m}" with an unknown hash stays ambiguous`);
+  ok((await go(fake({ error: { message: "max fee per gas less than block base fee: address 0x.., maxFeePerGas: 1, baseFee: 2" } }))).refused, "deterministic fee-cap refusal is a refusal");
+  // Ethereum has two RPCs: a transport failure on the first poisons a refusal from the second
+  let n = 0;
+  const twoRpc = async (url, method) => { if (method === "eth_sendRawTransaction") { if (n++ === 0) throw new Error("socket hang up"); return { error: { message: "insufficient funds" } }; } return { result: null }; };
+  ok((await sendRawEvm("1", "0x02", "0xabc", twoRpc)).ambiguous, "a refusal after a transport error on another RPC stays ambiguous");
 }
 
 /* ---------- decision math ---------- */
@@ -128,12 +135,13 @@ function harness(behaviour, cfg = {}) {
   const mk = key => ({
     title: key,
     async state(tx) { calls.push(`${key}:state`); return behaviour[key]?.state?.shift?.() ?? "exists"; },
-    async rebroadcast() { calls.push(`${key}:rebroadcast`); },
+    async rebroadcast() { calls.push(`${key}:rebroadcast`); const b = behaviour[key]?.rebroadcast?.shift?.(); if (b instanceof Error) throw b; },
     async send(ctx, st, note, onSigned) {
       calls.push(`${key}:send`);
       const b = behaviour[key]?.send?.shift?.();
-      if (b instanceof Error) { if (b.afterSign) await onSigned({ hash: "H" + calls.length }); throw b; }
-      await onSigned({ hash: "H" + calls.length });
+      const fee = behaviour[key]?.fee || "0";
+      if (b instanceof Error) { if (b.afterSign) await onSigned({ hash: "H" + calls.length, feeAllUSDC: fee }); throw b; }
+      await onSigned({ hash: "H" + calls.length, feeAllUSDC: fee });
       return { hash: "H" };
     },
     async arrive(ctx, st) {
@@ -146,7 +154,7 @@ function harness(behaviour, cfg = {}) {
   });
   const STAGES = { A1: mk("A1"), A2: mk("A2"), A3: mk("A3") };
   const run = makeRunner({ STAGES, ORDER: ["A1", "A2", "A3"], saveState: s => saved.push(JSON.parse(JSON.stringify(s))), log: () => {}, addFee: (s, a) => { s.fees = (BigInt(s.fees || 0) + BigInt(a)).toString(); }, retryMs: 0, refundRetryMs: 0, requoteMs: 0 });
-  const ctx = { cfg: { max_loop_loss_bps: 10, ...cfg } };
+  const ctx = { cfg: { max_loop_loss_bps: 10, ...cfg }, capMicro: cfg.capMicro ?? 5000000n };
   return { calls, saved, go: s => run(ctx, s) };
 }
 const fresh = (amt = "100000000") => ({ cycle: { id: "t", amountIn: amt, idx: 0, stages: {} } });
@@ -212,6 +220,47 @@ const fresh = (amt = "100000000") => ({ cycle: { id: "t", amountIn: amt, idx: 0,
   ok(s.cycle.stages.A2.tx && s.cycle.stages.A2.signed === 1, "and the signed tx stays journaled");
   await h.go(s);
   ok(h.calls.filter(c => c === "A2:send").length === 1 && h.calls.includes("A2:state"), "the next run resolves it by state instead of signing a second burn");
+}
+{
+  // A1 signed with a 1664 fee, then the service restarts during the bridge wait (arrive throws a transient error)
+  const h = harness({ A1: { fee: "1664", arrive: [new Error("fetch failed while waiting")] } }), s = fresh();
+  await h.go(s).catch(() => {});
+  ok(s.fees === "1664" && h.saved.some(x => x.fees === "1664" && x.cycle?.stages?.A1?.tx), "the A1 fee is journaled in the same write as the signed tx");
+  s.cycle.stages.A1.retryAfter = undefined;
+  await h.go(s).catch(() => {});
+  ok(h.calls.filter(c => c === "A1:send").length === 1, "resume does not sign A1 again");
+  ok(BigInt(s.fees) === 1664n, "and does not book the fee twice (loop loss is 0 here)");
+}
+{
+  ok(loopLossBound("100000000", 10) === 100000n, "worst-case loss of a 100 USDC loop at 10 bps is 0.1");
+  ok(fitsFeeCap({ capMicro: 5000000n, bookedMicro: "4850000", amountIn: "100000000", bps: 10, feeMicro: 1664n }), "fee + worst-case loss that fit are allowed");
+  ok(!fitsFeeCap({ capMicro: 5000000n, bookedMicro: "4990000", amountIn: "100000000", bps: 10, feeMicro: 1664n }), "a loop with 0.01 of budget left is refused");
+  ok(!fitsFeeCap({ capMicro: 5000000n, bookedMicro: "4899000", amountIn: "100000000", bps: 10, feeMicro: 1664n }), "the exact fee tips it over: refused");
+  const m = nextUtcMidnight(Date.UTC(2026, 8, 24, 15, 4)); ok(m === Date.UTC(2026, 8, 25), "next UTC midnight");
+}
+{
+  // 4.99 already booked today: A1's exact fee plus the loop's 0.1 worst-case loss does not fit a 5 cap
+  const h = harness({ A1: { fee: "1664" } }, { capMicro: 5000000n }), s = fresh(); s.fees = "4990000"; s.feesToday = "4990000";
+  try { await h.go(s); ok(false, "fee cap stops A1"); } catch (e) { ok(e.wait && /retry scheduled/.test(e.message), "A1 over the fee cap waits instead of signing"); }
+  ok(!s.cycle.stages.A1.tx && s.cycle.stages.A1.signed === 0 && s.fees === "4990000", "nothing journaled, signed or booked");
+  ok(s.cycle.stages.A1.retryAfter === nextUtcMidnight(), "and the stage resumes at 00:00 UTC");
+}
+{
+  // an LCD blip while polling for arrival: not a halt, no refund check, no second signature
+  const h = harness({ A2: { arrive: [new Error("503 from https://injective-api.polkachu.com/...")] } }), s = fresh();
+  try { await h.go(s); ok(false, "read error propagates"); } catch (e) { ok(!e.halt, "a failed balance read while waiting is transient, not a halt"); }
+  ok(!h.calls.includes("A2:refunded") && s.cycle.stages.A2.tx, "no refund check, and the burn stays journaled");
+  await h.go(s);
+  ok(h.calls.filter(c => c === "A2:send").length === 1 && s.history.at(-1).out === "100000000", "the next tick resumes the wait and completes without signing again");
+}
+{
+  // a recorded burn the node dropped and now refuses deterministically on rebroadcast: re-signed exactly once
+  const exp = Object.assign(new Error("recorded burn is refused on rebroadcast: max fee per gas less than block base fee"), { txExpired: true });
+  const h = harness({ A2: { state: ["unknown"], rebroadcast: [exp] } }), s = fresh();
+  s.cycle.idx = 1; s.cycle.stages.A1 = { amountIn: "100000000", received: "100000000", signed: 1, tx: { hash: "A" } };
+  s.cycle.stages.A2 = { amountIn: "100000000", signed: 1, tx: { hash: "B", nonce: "5" } };
+  ok(await h.go(s) === "done", "a burn refused on rebroadcast is signed again and the loop completes");
+  ok(h.calls.slice(0, 3).join() === "A2:state,A2:rebroadcast,A2:send" && s.history.at(-1).out === "100000000", "state, rebroadcast refused, one new signature");
 }
 {
   const rq = () => Object.assign(new Error("route refused: route: expected exactly one swap hop, got 3"), { requote: true });

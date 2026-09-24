@@ -10,11 +10,11 @@
  * the stage started, which is the only condition under which the runner signs that stage again.
  */
 import { P } from "./page.mjs";
-import { signAndBroadcast, evmSend, cosmosTxState, evmTxState, rebroadcastCosmos, waitCosmosTx } from "./sign.mjs";
+import { signAndBroadcast, evmSend, sendRawEvm, cosmosTxState, evmTxState, rebroadcastCosmos, waitCosmosTx } from "./sign.mjs";
 import { headroom } from "./chain.mjs";
 
 const { K, Any, MsgSwapExactAmountIn, skipMsgToAny, skipRoute, validateNobleToHub, validateHubToInj, validateInjToAll, assertChannel,
-        bankBalance, erc20BalanceOf, erc20Allowance, approvalPlan, approveCalldata, trackToCompletion, waitArrival, rpc, waitReceipt, fmtUnits, sleep } = P;
+        bankBalance, erc20BalanceOf, erc20Allowance, approvalPlan, approveCalldata, trackToCompletion, waitArrival, waitReceipt, fmtUnits, sleep } = P;
 
 const AVAX = "43114", H = K.HUB[AVAX];
 export const halt = msg => Object.assign(new Error(msg), { halt: true });
@@ -79,7 +79,13 @@ export const STAGES = {
   A2: {
     title: "Avalanche: USDC -> Injective USDC.inj (CCTP v2)",
     async state(tx, ctx) { return evmTxState(AVAX, tx.hash, tx.nonce, ctx.W.evm); },
-    async rebroadcast(tx) { try { await rpc(AVAX, "eth_sendRawTransaction", [tx.raw]); } catch {} await waitReceipt(AVAX, tx.hash, 15 * 60 * 1000); },
+    /* the same signed bytes again. A deterministic refusal with the hash unknown (e.g. its max fee is now below the base
+       fee after the node dropped it) means it can never land as signed, so the runner may sign it again */
+    async rebroadcast(tx) {
+      const r = await sendRawEvm(AVAX, tx.raw, tx.hash);
+      if (r.refused) throw Object.assign(new Error(`recorded burn ${tx.hash} is refused on rebroadcast: ${r.refused}`), { txExpired: true });
+      await waitReceipt(AVAX, tx.hash, 15 * 60 * 1000);
+    },
     async send(ctx, st, note, onSigned) {
       const amountIn = st.amountIn;
       const bal = await avaxUsdc(ctx);

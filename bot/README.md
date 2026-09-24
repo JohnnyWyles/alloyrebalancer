@@ -24,9 +24,11 @@ straight out of `../index.html`):
 | A2 | Avalanche | exact-amount approval, then CCTP v2 burn to Injective |
 | A3 | Injective | IBC to Osmosis with a hook swap into allUSDC; the bot raises the swap's minimum to the full amount |
 
-Each stage's input is what verifiably arrived from the previous one. A loop takes about 20 minutes, and while the pool
-stays below target the next one starts as soon as the last one finishes. At 100 USDC a loop costs about 0.02 USDC
-in bridge fees (quoted live on 2026-09-24) plus gas.
+Each stage's input is what verifiably arrived from the previous one. A loop takes about 3 minutes (both CCTP legs are
+fast transfers; 2 min 50 s measured on 2026-09-24), and while the pool stays below target the next one starts as soon
+as the last one finishes. Measured cost of a 100 USDC loop, all in: $0.004 to $0.015. Most of it is the Noble to
+Avalanche relay fee and Avalanche gas, both of which move with Avalanche's gas price, so larger loops cost less per
+dollar moved.
 
 **Gas looks after itself.** Osmosis fees are paid in allUSDC (a chain fee token), so the wallet never holds OSMO.
 When AVAX or INJ falls below its floor the bot buys more with allUSDC through the page's Fund Gas route: 2 allUSDC
@@ -137,7 +139,7 @@ journalctl -u alloybot -f
 ```
 
 The first minutes: an AVAX refill (Axelar, a few minutes), an INJ refill, then `starting loop ...` and the three
-stages. After about 20 minutes: `loop complete: 99 out, 98.98 back, loss 0.02`. With `max_loops_per_day: 1` it then
+stages. A few minutes later: `loop complete: 100 out, 99.994276 back, loss 0.005724`. With `max_loops_per_day: 1` it then
 logs `max_loops_per_day reached` until 00:00 UTC.
 
 ### 8. Ramp up
@@ -148,8 +150,10 @@ After a few clean loops, edit `/var/lib/alloybot/config.json` (the bot re-reads 
 sudo -u alloybot nano /var/lib/alloybot/config.json
 ```
 
-Raise `max_loops_per_day` (about 70 loops fit in a day), then `loop_usdc` once you add capital. Raise
-`max_fee_usdc_per_day` alongside: at 100 USDC a loop, 70 loops cost about 1.5 USDC in bridge fees plus gas refills.
+Raise `max_loops_per_day` (up to about 480 loops fit in a day at ~3 minutes each), then `loop_usdc` once you add
+capital. Keep `max_fee_usdc_per_day` in step: it counts allUSDC-denominated costs (bridge losses, Osmosis fees, gas
+refills), about 0.003 to 0.008 per 100 USDC loop, and each loop also reserves its worst-case loss
+(`max_loop_loss_bps` of its amount) before starting.
 
 ## Day to day
 
@@ -202,8 +206,8 @@ Halts and repeated errors are sent there.
 | `reserve_usdc` | 3 | allUSDC kept back for Osmosis fees and gas refills |
 | `max_loops_per_day` | 100 | UTC day |
 | `max_loop_loss_bps` | 10 | allUSDC back vs out per loop; more halts |
-| `max_fee_usdc_per_day` | 5 | loop losses + gas refills (with their tx fee) + Osmosis fees; a loop or refill that does not fit waits for 00:00 UTC |
-| `gas_floor` | avax 0.005, inj 0.001 | refill below these |
+| `max_fee_usdc_per_day` | 5 | loop losses + gas refills (with their tx fee) + Osmosis fees, UTC day. A loop starts only if its worst-case loss (`max_loop_loss_bps` of its amount) and its fee fit, and every A1 rechecks its exact fee before broadcast; a refill likewise. What does not fit waits for 00:00 UTC. A loss beyond `max_loop_loss_bps` halts. |
+| `gas_floor` | avax 0.02, inj 0.001 | refill below these, checked between loops. The AVAX floor covers one loop at the 50 gwei cap; a stage that still cannot pay its gas halts before signing |
 | `max_gas_refills_per_day` | 4 | needing more halts |
 | `gas_refill_usdc` | avax 2, inj 1 | allUSDC spent per refill (at most 10) |
 | `gas_min_value_pct` | 80 | a refill quote must deliver at least this % of its cost in gas, otherwise it waits |

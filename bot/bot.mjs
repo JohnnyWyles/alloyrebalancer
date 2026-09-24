@@ -18,7 +18,7 @@ import path from "node:path";
 import { P } from "./page.mjs";
 import { deriveWallet } from "./sign.mjs";
 import { STAGES, ORDER, halt, tightenMinAsset } from "./stages.mjs";
-import { makeRunner } from "./cycle.mjs";
+import { makeRunner, fitsFeeCap, loopLossBound } from "./cycle.mjs";
 import { readPool, deficit, sharePct, headroom, balances, refillGas } from "./chain.mjs";
 
 const { K, fmtUnits, setLog, PROVEN, sleep } = P;
@@ -26,7 +26,7 @@ const argv = process.argv.slice(2), cmd = argv.find(a => !a.startsWith("--")) ||
 const DIR = process.env.ALLOYBOT_STATE_DIR || "/var/lib/alloybot";
 const F = { config: path.join(DIR, "config.json"), state: path.join(DIR, "state.json"), halted: path.join(DIR, "HALTED"), stop: path.join(DIR, "STOP"), init: path.join(DIR, "JOURNAL_INITIALIZED") };
 const TICK_MS = 60000;
-const REFILL_FEE_BOUND = 50000n;   // 0.05 allUSDC: far above a refill tx fee (0.0045 observed), reserved before one is signed
+const REFILL_FEE_BOUND = 50000n;   // 0.05 allUSDC: far above an Osmosis tx fee (0.0017 A1, 0.0045 refill observed), reserved before one is signed
 
 /* ---------------- config (re-read every tick, so edits apply without a restart) ---------------- */
 const DEFAULTS = {
@@ -38,7 +38,7 @@ const DEFAULTS = {
   max_loops_per_day: 100,
   max_loop_loss_bps: 10,     // allUSDC back vs out, per loop; more than this halts
   max_fee_usdc_per_day: 5,   // loop losses + gas refills + Osmosis fees, UTC day
-  gas_floor: { avax: 0.005, inj: 0.001 },
+  gas_floor: { avax: 0.02, inj: 0.001 },   // avax covers one loop's approval + burn at the 50 gwei cap (~0.0174)
   max_gas_refills_per_day: 4,
   gas_refill_usdc: { avax: 2, inj: 1 },   // allUSDC per refill; Axelar's flat fee makes small AVAX refills poor value
   gas_min_value_pct: 80,     // a refill quote must deliver at least this % of its allUSDC in gas
@@ -76,10 +76,13 @@ function durableWrite(file, text) {
   try { const d = fs.openSync(DIR, "r"); try { fs.fsyncSync(d); } finally { fs.closeSync(d); } }
   catch (e) { if (process.platform !== "win32") throw e; }   // Windows cannot fsync a directory; the bot runs on Linux
 }
-function loadState() {
+/* readOnly (status only): a lost journal is reported as { journalLost } instead of thrown, so the operator can read
+   onchain balances before deciding to delete the marker. Anything that signs loads without it and fails closed. */
+function loadState({ readOnly = false } = {}) {
   try { return JSON.parse(fs.readFileSync(F.state, "utf8")); }
   catch (e) {
     if (e.code !== "ENOENT") throw new Error(`state.json unreadable (${e.message}); refusing to run without the journal`);
+    if (fs.existsSync(F.init) && readOnly) return { journalLost: `state.json is missing; ${F.init} says a journal existed since ${fs.readFileSync(F.init, "utf8").trim()}` };
     if (fs.existsSync(F.init)) throw Object.assign(new Error(`state.json is missing but ${F.init} says this directory has held a journal since ${fs.readFileSync(F.init, "utf8").trim()}. `
       + `A lost journal could hide a loop in flight. Restore state.json, or, only if you have checked on chain that no loop is in flight, delete ${F.init}.`), { lostJournal: true, halt: true });
     return {};
@@ -168,10 +171,14 @@ async function tick(ctx) {
     if (room < spend + REFILL_FEE_BOUND) { saveState(s); return log(`${g.toUpperCase()} gas is below its floor but a ${fmtUnits(spend)} refill does not fit in today's remaining fee budget ${fmtUnits(room > 0n ? room : 0n)}; waiting for 00:00 UTC`), "capped"; }
     try {
       await refillGas(g, ctx, m => log(`[gas ${g}]`, m), async tx => {   // counted at signing, before broadcast, with its own tx fee
+        const total = spend + BigInt(tx.feeAllUSDC || 0);
+        // the exact fee is known here: recheck the hard cap before anything is journaled or broadcast
+        if (total > room) throw Object.assign(new Error(`${g.toUpperCase()} refill costs ${fmtUnits(total)} with its fee, over today's remaining budget ${fmtUnits(room)}`), { feeCap: true });
         s.refillsToday = (s.refillsToday || 0) + 1; s.refillPending = { ...s.refillPending, [g]: { at: Date.now(), hash: tx.hash } };
-        addFee(s, spend + (tx.feeDenom === K.ALL ? BigInt(tx.fee || 0) : 0n)); saveState(s);
+        addFee(s, total); saveState(s);
       });
     } catch (e) {
+      if (e.feeCap) { saveState(s); return log(`${e.message}; not sent, waiting for 00:00 UTC`), "capped"; }
       if (!e.requote || DRY) throw e;
       // a refused gas route signed nothing: ask again in 10 minutes, halt when it keeps refusing
       const n = (s.gasRefusals?.[g] || 0) + 1; s.gasRefusals = { ...s.gasRefusals, [g]: n };
@@ -186,10 +193,13 @@ async function tick(ctx) {
   }
 
   if ((s.loopsToday || 0) >= ctx.cfg.max_loops_per_day) { saveState(s); return log("max_loops_per_day reached"), "capped"; }
-  if (BigInt(s.feesToday || 0) >= usdc(ctx.cfg.max_fee_usdc_per_day)) { saveState(s); return log("max_fee_usdc_per_day reached"), "capped"; }
   const idle = b.all - usdc(ctx.cfg.reserve_usdc);
   let amount = usdc(ctx.cfg.loop_usdc); if (need < amount) amount = need; if (idle < amount) amount = idle;
   if (amount < usdc(ctx.cfg.min_loop_usdc)) { saveState(s); return log(`idle allUSDC ${fmtUnits(b.all)} (reserve ${ctx.cfg.reserve_usdc}) is below min_loop_usdc`), "no-funds"; }
+  // a loop starts only if its worst-case loss and a bound on its A1 fee fit in today's budget; A1 rechecks the exact fee
+  if (!fitsFeeCap({ capMicro: ctx.capMicro, bookedMicro: s.feesToday, amountIn: amount, bps: ctx.cfg.max_loop_loss_bps, feeMicro: REFILL_FEE_BOUND })) {
+    saveState(s); return log(`a ${fmtUnits(amount)} loop (worst-case loss ${fmtUnits(loopLossBound(amount, ctx.cfg.max_loop_loss_bps))} + fee) does not fit in today's remaining fee budget; waiting for 00:00 UTC`), "capped";
+  }
 
   for (const [denom, dir, ch, label] of [[K.NOBLE, "out", K.OSMO_TO_NOBLE, "USDC.noble outflow"], [K.INJ_IBC, "in", K.OSMO_TO_INJ, "USDC.inj inflow"]]) {
     const h = await headroom(denom, dir, ch);
@@ -228,10 +238,10 @@ async function dryRun(ctx, s, amount) {
 
 /* ---------------- commands ---------------- */
 async function status(ctx) {
-  const s = loadState(), cfg = ctx.cfg, pool = await readPool(), b = await balances(ctx.W);
+  const s = loadState({ readOnly: true }), cfg = ctx.cfg, pool = await readPool(), b = await balances(ctx.W);
   const rl = await Promise.all([headroom(K.NOBLE, "out", K.OSMO_TO_NOBLE), headroom(K.INJ_IBC, "in", K.OSMO_TO_INJ)]);
   console.log(JSON.stringify({
-    addresses: ctx.W, halted: fs.existsSync(F.halted) ? fs.readFileSync(F.halted, "utf8").split("\n")[1] : null, stopFile: fs.existsSync(F.stop), enabled: cfg.enabled,
+    addresses: ctx.W, journalLost: s.journalLost || null, halted: fs.existsSync(F.halted) ? fs.readFileSync(F.halted, "utf8").split("\n")[1] : null, stopFile: fs.existsSync(F.stop), enabled: cfg.enabled,
     pool: { noble: fmtUnits(pool.noble), inj: fmtUnits(pool.inj), total: fmtUnits(pool.total), injPct: sharePct(pool), target: cfg.target_inj_pct, shortBy: fmtUnits(deficit(pool, cfg.target_inj_pct)),
             active: pool.active, corrupted: pool.corrupted, limiters: pool.limiters.length },
     balances: { allUSDC: fmtUnits(b.all), usdcNobleOnOsmosis: fmtUnits(b.noble), avalancheUSDC: fmtUnits(b.avaxUsdc), AVAX: fmtUnits(b.avax, 18), INJ: fmtUnits(b.inj, 18), injectiveUSDCinj: fmtUnits(b.injUsdc) },
@@ -270,7 +280,7 @@ async function main() {
   if (cmd === "addresses") { const { W } = loadWallet(); console.log(JSON.stringify(W, null, 1)); return; }
   fs.mkdirSync(DIR, { recursive: true });
   const wallet = loadWallet();
-  const mk = () => { const cfg = loadConfig(cmd !== "status"); return { W: wallet.W, wallet, cfg, signOpts: { dryRun: DRY, osmoFeeMargin: cfg.osmo_fee_margin } }; };
+  const mk = () => { const cfg = loadConfig(cmd !== "status"); return { W: wallet.W, wallet, cfg, capMicro: usdc(cfg.max_fee_usdc_per_day), signOpts: { dryRun: DRY, osmoFeeMargin: cfg.osmo_fee_margin } }; };
   if (cmd === "status") return status(mk());
   if (cmd !== "run" && cmd !== "once") throw new Error(`unknown command ${cmd}`);
   loadConfig(true);   // fail at startup, not on the first tick, when config.json is missing or invalid

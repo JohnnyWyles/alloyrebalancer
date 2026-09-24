@@ -9,7 +9,17 @@ import { P } from "./page.mjs";
 const { fmtUnits } = P;
 const halt = msg => Object.assign(new Error(msg), { halt: true });
 export const MAX_SIGNED_ATTEMPTS = 3;
+const ARRIVAL_FAILED = /rose by only|^Skip reports/;   // page's waitArrival timeout, trackToCompletion's terminal error
 export const MAX_REQUOTES = 6;   // consecutive refused quotes per stage before halting: 30 s, 1, 2, 4, 8 min apart (~15 min)
+
+/* The daily fee ceiling, for loops. A loop may still lose up to max_loop_loss_bps of its amount (booked when it
+   completes), so any allUSDC fee signed for it must fit together with that worst-case loss. A loss beyond the bound
+   halts the bot anyway, so for every loop that completes normally the ceiling holds. */
+export const loopLossBound = (amountIn, bps) => BigInt(amountIn) * BigInt(bps) / 10000n;
+export function fitsFeeCap({ capMicro, bookedMicro, amountIn, bps, feeMicro }) {
+  return BigInt(bookedMicro || 0) + BigInt(feeMicro || 0) + loopLossBound(amountIn, bps) <= BigInt(capMicro);
+}
+export const nextUtcMidnight = (now = Date.now()) => { const d = new Date(now); d.setUTCHours(24, 0, 0, 0); return d.getTime(); };
 
 export function makeRunner({ STAGES, ORDER, saveState, log, addFee, retryMs = 120000, refundRetryMs = 300000, requoteMs = 30000 }) {
  return async function runCycle(ctx, s) {
@@ -25,10 +35,20 @@ export function makeRunner({ STAGES, ORDER, saveState, log, addFee, retryMs = 12
         if (st.signed >= MAX_SIGNED_ATTEMPTS) throw halt(`${key} was signed ${st.signed} times without success`);
         note(`${S.title}: sending ${fmtUnits(st.amountIn)}`);
         try {
-          const r = await S.send(ctx, st, note, async tx => { st.tx = tx; st.signed++; st.requotes = 0; save(); });
+          // the tx and its allUSDC fee are journaled in one durable write, so a restart during the arrival wait
+          // neither loses the fee nor books it twice (the resume path never signs, so never books)
+          const r = await S.send(ctx, st, note, async tx => {
+            const fee = BigInt(tx.feeAllUSDC || 0);
+            // exact fee known, nothing journaled or broadcast yet: the fee plus the loop's worst-case loss must fit today
+            if (fee > 0n && !fitsFeeCap({ capMicro: ctx.capMicro, bookedMicro: s.feesToday, amountIn: c.amountIn, bps: ctx.cfg.max_loop_loss_bps, feeMicro: fee }))
+              throw Object.assign(new Error(`${key} fee ${fmtUnits(fee)} plus this loop's worst-case loss ${fmtUnits(loopLossBound(c.amountIn, ctx.cfg.max_loop_loss_bps))} does not fit in today's remaining fee budget`), { feeCap: true });
+            st.tx = tx; st.signed++; st.requotes = 0; if (fee > 0n) addFee(s, fee); save();
+          });
           if (r?.dryRun) { note("dry run stops here"); return "dry"; }
-          if (key === "A1" && r?.fee) addFee(s, r.fee);   // Osmosis fee, paid in allUSDC
         } catch (e) {
+          if (e.feeCap && !st.tx) {   // nothing signed: the funds stay at this stage's source until the budget resets
+            st.retryAfter = nextUtcMidnight(); note(`${e.message}; not sent, waiting for 00:00 UTC`); save(); continue;
+          }
           if (e.requote && !st.tx) {   // nothing was signed: ask again later, halt only if it keeps refusing
             st.requotes = (st.requotes || 0) + 1;
             if (st.requotes >= MAX_REQUOTES) throw halt(`${key}: ${st.requotes} refused quotes in a row, latest: ${e.message}`);
@@ -55,6 +75,9 @@ export function makeRunner({ STAGES, ORDER, saveState, log, addFee, retryMs = 12
         st.received = await S.arrive(ctx, st, note);
         note(`received ${fmtUnits(st.received)}`); save(); break;
       } catch (e) {
+        // only a definitive outcome is judged here: the arrival window ran out, or Skip reports a terminal error. A failed
+        // read (LCD or RPC blip) is transient; the tx stays journaled and the next tick waits again without signing.
+        if (!ARRIVAL_FAILED.test(e.message)) throw e;
         if (await S.refunded(ctx, st).catch(() => false)) {
           note(`refunded to the stage's source (${e.message}); retrying in 5 minutes`);
           st.tx = undefined; st.refunds = (st.refunds || 0) + 1; st.retryAfter = Date.now() + refundRetryMs; save(); continue;
