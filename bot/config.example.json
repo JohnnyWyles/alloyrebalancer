@@ -1,0 +1,17 @@
+{
+  "enabled": true,
+  "target_inj_pct": 50,
+  "loop_usdc": 100,
+  "min_loop_usdc": 10,
+  "reserve_usdc": 3,
+  "max_loops_per_day": 1,
+  "max_loop_loss_bps": 10,
+  "max_fee_usdc_per_day": 5,
+  "gas_floor": { "avax": 0.005, "inj": 0.001 },
+  "max_gas_refills_per_day": 4,
+  "avax_max_fee_gwei": 50,
+  "osmo_fee_margin": 2,
+  "rate_limit_margin_pct": 1,
+  "stranded_threshold_usdc": 1,
+  "telegram": null
+}

@@ -1,0 +1,37 @@
+[Unit]
+Description=Alloy Rebalancer bot (holds USDC.inj at or above a target share of allUSDC)
+After=network-online.target time-sync.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=alloybot
+Group=alloybot
+WorkingDirectory=/opt/alloyrebalancer/bot
+ExecStart=/usr/bin/node /opt/alloyrebalancer/bot/bot.mjs run
+Environment=ALLOYBOT_STATE_DIR=/var/lib/alloybot
+# the mnemonic stays root-owned in /etc/alloybot; systemd hands the service a private read-only copy
+LoadCredential=mnemonic:/etc/alloybot/mnemonic
+StateDirectory=alloybot
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=30
+# stopping mid-loop is safe: the journal resumes the stage on the next start
+TimeoutStopSec=20
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

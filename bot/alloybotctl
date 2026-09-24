@@ -1,0 +1,11 @@
+#!/bin/sh
+# Runs one bot command as the service user, with the same mnemonic credential and state directory as the service.
+#   alloybotctl addresses | status | once --dry-run
+# `once` refuses to run while the service holds the lock; stop the service first.
+exec sudo systemd-run --quiet --pipe --wait --collect \
+  -p User=alloybot -p Group=alloybot \
+  -p LoadCredential=mnemonic:/etc/alloybot/mnemonic \
+  -p Environment=ALLOYBOT_STATE_DIR=/var/lib/alloybot \
+  -p StateDirectory=alloybot -p StateDirectoryMode=0700 \
+  -p WorkingDirectory=/opt/alloyrebalancer/bot \
+  /usr/bin/node /opt/alloyrebalancer/bot/bot.mjs "$@"

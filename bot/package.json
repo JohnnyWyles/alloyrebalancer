@@ -1,0 +1,14 @@
+{
+  "name": "alloyrebalancer-bot",
+  "private": true,
+  "type": "module",
+  "description": "Headless allUSDC noble->inj rebalancer that holds USDC.inj at or above a target share of pool 3497",
+  "engines": { "node": ">=20" },
+  "scripts": { "test": "node test.mjs", "start": "node bot.mjs" },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@scure/bip32": "2.4.0",
+    "@scure/bip39": "2.4.0"
+  }
+}

@@ -30,6 +30,7 @@ on Injective); the Peggy `MsgSendToEth` leg is the one Ledger signature not yet 
 | `test.mjs` | Regression suite: encoder bytes against reference implementations, bech32 and Nomic derivations, and every route validator against saved Skip, Chainflip and Nomic responses. `node test.mjs` |
 | `test-fixtures/` | Real API responses (good routes and the ones that must be refused), the Nomic signatory set the derivation is checked against, and reference bytes for the encoders. |
 | `serve.cmd` | Serves this folder on `127.0.0.1:8900`. Local only, deliberately. |
+| `bot/` | Headless allUSDC noble -> inj loop on its own wallet, holding USDC.inj at or above a target share. Reuses this page's validators. See `bot/README.md`. |
 | `LICENSE` | Apache 2.0. |
 
 ## A word on trusting this page
