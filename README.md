@@ -1,8 +1,14 @@
 # Alloy Rebalancer
 
-**Status: alpha, unaudited.** No route has been exercised end to end with a live wallet yet. Use small
-amounts; routes through Nomic, Chainflip or Injective's Peggy bridge are additionally capped and need an
+**Status: alpha, unaudited.** Run end to end with live wallets: allUSDC USDC.noble -> USDC.inj (Keplr, a
+Ledger, and the headless bot in [`bot/`](bot/README.md)) and allUSDT USDT.eth.inj -> USDT.eth.atom (Peggy and
+Eureka). The other routes are checked against saved API responses but have not yet run with a live wallet. Use
+small amounts; routes through Nomic, Chainflip or Injective's Peggy bridge are additionally capped and need an
 explicit acknowledgement in the page.
+
+**Headless bot.** [`bot/`](bot/README.md) runs the allUSDC noble -> inj loop unattended on its own wallet, keeping
+USDC.inj at or above a target share of the alloy. It reuses this page's route validators and pinned constants,
+signs with its own key, and is set up as a systemd service on a Linux VM.
 
 Browser tool that shifts the backing of an Osmosis alloy (transmuter pool) from one variant to another
 by taking one variant out, bridging it, and depositing another back in, so the alloy's composition moves
@@ -179,7 +185,7 @@ Cycle state persists in local storage so a reload mid-flight resumes at the righ
 records the transaction hash the moment it exists (before broadcast on Cosmos chains, as soon as the
 wallet returns it on EVM chains) together with the destination balance it started from and the amount it
 expects, so a reload after signing never signs again: on Continue, or automatically once Keplr is
-reconnected, the page confirms the transaction exists on chain and goes back to waiting for arrival. A
+reconnected, the page confirms the transaction exists onchain and goes back to waiting for arrival. A
 recorded transaction the network does not know about is never cleared automatically: the page stops,
 explains, and clearing it is a separate confirmed action (see Safety behaviour). Balances refresh every 30
 seconds and the pool every 60. If USDC is
