@@ -97,7 +97,8 @@ sudo install -d -m 700 -o alloybot -g alloybot /var/lib/alloybot
 sudo install -m 600 -o alloybot -g alloybot /opt/alloyrebalancer/bot/config.example.json /var/lib/alloybot/config.json
 ```
 
-The example is set for the first run: 100 USDC loops, 3 USDC reserve, **one loop a day**.
+The example is set for the first run: 100 USDC loops, 3 USDC reserve, **one loop a day**. `run` and `once` refuse to
+start without this file, so a skipped step never means live loops on built-in defaults.
 
 ### 5. Fund it
 
@@ -167,6 +168,10 @@ Halts you might see and what they mean:
   usually means an adapter, recipient or route shape changed. Check the page and its tests before deleting `HALTED`.
 - **USDC.noble on Osmosis / USDC on Avalanche / USDC.inj on Injective with no loop in flight**: an earlier loop left
   funds outside the alloy. Import the mnemonic into Keplr and use the page's stranded-funds offer, or move them by hand.
+- **state.json is missing but JOURNAL_INITIALIZED says ...**: the journal was lost (deleted, or a disk restored from an
+  older snapshot) in a directory that had one. It may have been tracking a loop in flight, so the bot will not start a
+  fresh one. Restore `state.json` from a backup, or check on chain that no funds are outside the alloy (`alloybotctl
+  status`: no USDC on Avalanche or Injective, no USDC.noble on Osmosis) and then delete `JOURNAL_INITIALIZED` and `HALTED`.
 - **rose by only ...**: a bridge leg did not deliver in time. Look up the recorded tx in `state.json`. When the funds
   land, deleting `HALTED` resumes the loop from that stage.
 
@@ -197,7 +202,7 @@ Halts and repeated errors are sent there.
 | `reserve_usdc` | 3 | allUSDC kept back for Osmosis fees and gas refills |
 | `max_loops_per_day` | 100 | UTC day |
 | `max_loop_loss_bps` | 10 | allUSDC back vs out per loop; more halts |
-| `max_fee_usdc_per_day` | 5 | loop losses + gas refills + Osmosis fees; reaching it pauses until 00:00 UTC |
+| `max_fee_usdc_per_day` | 5 | loop losses + gas refills (with their tx fee) + Osmosis fees; a loop or refill that does not fit waits for 00:00 UTC |
 | `gas_floor` | avax 0.005, inj 0.001 | refill below these |
 | `max_gas_refills_per_day` | 4 | needing more halts |
 | `gas_refill_usdc` | avax 2, inj 1 | allUSDC spent per refill (at most 10) |

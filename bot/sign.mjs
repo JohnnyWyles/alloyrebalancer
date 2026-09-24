@@ -87,11 +87,13 @@ export async function signAndBroadcast(chainId, wallet, anys, note, onSigned, op
   const raw = TxRaw(body, authInfo, [signCosmosBytes(k, SignDoc(body, authInfo, chainId, acc.accountNumber))]);
   const hash = await txHashOf(raw);
   if (opts.dryRun) { note(`dry run: would broadcast ${hash} (gas ${gas}, fee ${fee} ${feeDenom})`); return { hash, fee, feeDenom, dryRun: true }; }
-  await onSigned({ hash, raw: b64(raw), timeoutHeight, chain: chainId });   // recorded before the POST
+  await onSigned({ hash, raw: b64(raw), timeoutHeight, chain: chainId, fee, feeDenom });   // recorded before the POST
   note(`broadcasting ${hash} (gas ${gas}, fee ${fee} ${feeDenom === K.ALL ? "uallUSDC" : feeDenom})`);
+  // a transport error here propagates without rejectedHash: the journaled tx is resolved by hash / timeout height later
   const res = await lcdPost(simEp, "/cosmos/tx/v1beta1/txs", { tx_bytes: b64(raw), mode: "BROADCAST_MODE_SYNC" });
   const tr = res.tx_response || {};
-  if (Number(tr.code) !== 0) throw Object.assign(new Error(`rejected at CheckTx (code ${tr.code}): ${tr.raw_log || tr.log || "no log"}`), { rejectedHash: hash });
+  // code 19: already in the mempool cache, i.e. accepted
+  if (Number(tr.code) !== 0 && Number(tr.code) !== 19) throw Object.assign(new Error(`rejected at CheckTx (code ${tr.code}): ${tr.raw_log || tr.log || "no log"}`), { rejectedHash: hash });
   await waitCosmosTx(chainId, hash, timeoutHeight);
   return { hash, fee, feeDenom };
 }
@@ -173,10 +175,39 @@ export async function evmSend(chainId, wallet, { to, data, value }, note, onSign
   if (opts.dryRun) { note(`dry run: would send ${hash} to ${to} (gas ${gas})`); return { hash, dryRun: true }; }
   await onSigned({ hash, raw, nonce: nonce.toString(), chain: chainId });
   note(`sending ${hash} to ${to} (nonce ${nonce}, gas ${gas}, max fee ${Number(maxFee) / 1e9} gwei)`);
-  try { await rpc(chainId, "eth_sendRawTransaction", [raw]); }
-  catch (e) { if (!/already known|known transaction/i.test(e.message)) throw Object.assign(new Error(`${chainId} refused the tx: ${e.message}`), { rejectedHash: hash }); }
+  const sent = await sendRawEvm(chainId, raw, hash);
+  if (sent.refused) throw Object.assign(new Error(`${chainId} refused the tx: ${sent.refused}`), { rejectedHash: hash });
+  if (sent.ambiguous) throw new Error(`${chainId} send of ${hash} is unconfirmed (${sent.ambiguous}); the recorded tx is resolved by hash and nonce on the next tick`);
   await waitReceipt(chainId, hash, 15 * 60 * 1000);
   return { hash };
+}
+/* Classifies one eth_sendRawTransaction. Only an explicit JSON-RPC refusal, confirmed by the node not knowing the
+   hash, counts as "never sent" ({refused}); a timeout, dropped connection or unparseable reply may have been accepted
+   before the response was lost ({ambiguous}), so the caller keeps the journaled tx and resolves it later. */
+export async function sendRawEvm(chainId, raw, hash, fetchJson = evmPost) {
+  let reply, lastTransport = null;
+  for (const url of K.EVM[chainId].rpc) {
+    try { reply = await fetchJson(url, "eth_sendRawTransaction", [raw]); break; }
+    catch (e) { lastTransport = e.message; }
+  }
+  if (!reply) return { ambiguous: lastTransport || "no RPC answered" };
+  if (!reply.error) return { accepted: true };
+  const msg = String(reply.error.message || JSON.stringify(reply.error));
+  if (/already known|known transaction|already imported/i.test(msg)) return { accepted: true };
+  if (/nonce too low/i.test(msg)) return { ambiguous: msg };   // may be this very tx, already mined
+  try {
+    const [byHash, receipt] = await Promise.all([fetchJson(K.EVM[chainId].rpc[0], "eth_getTransactionByHash", [hash]), fetchJson(K.EVM[chainId].rpc[0], "eth_getTransactionReceipt", [hash])]);
+    if (byHash.error || receipt.error) return { ambiguous: `${msg} (and the hash lookup failed)` };
+    if (byHash.result || receipt.result) return { accepted: true };
+  } catch (e) { return { ambiguous: `${msg} (and the hash lookup failed: ${e.message})` }; }
+  return { refused: msg };
+}
+async function evmPost(url, method, params) {
+  const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal: AbortSignal.timeout(20000) });
+  const t = await r.text();
+  let j; try { j = JSON.parse(t); } catch { throw new Error(`${r.status} non-JSON reply from ${url}`); }
+  if (!("result" in j) && !j.error) throw new Error(`malformed JSON-RPC reply from ${url}`);
+  return j;
 }
 export async function evmTxState(chainId, hash, nonce, addr) {
   const r = await rpc(chainId, "eth_getTransactionReceipt", [hash]);

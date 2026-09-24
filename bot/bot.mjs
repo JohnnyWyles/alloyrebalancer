@@ -24,8 +24,9 @@ import { readPool, deficit, sharePct, headroom, balances, refillGas } from "./ch
 const { K, fmtUnits, setLog, PROVEN, sleep } = P;
 const argv = process.argv.slice(2), cmd = argv.find(a => !a.startsWith("--")) || "status", DRY = argv.includes("--dry-run");
 const DIR = process.env.ALLOYBOT_STATE_DIR || "/var/lib/alloybot";
-const F = { config: path.join(DIR, "config.json"), state: path.join(DIR, "state.json"), halted: path.join(DIR, "HALTED"), stop: path.join(DIR, "STOP") };
+const F = { config: path.join(DIR, "config.json"), state: path.join(DIR, "state.json"), halted: path.join(DIR, "HALTED"), stop: path.join(DIR, "STOP"), init: path.join(DIR, "JOURNAL_INITIALIZED") };
 const TICK_MS = 60000;
+const REFILL_FEE_BOUND = 50000n;   // 0.05 allUSDC: far above a refill tx fee (0.0045 observed), reserved before one is signed
 
 /* ---------------- config (re-read every tick, so edits apply without a restart) ---------------- */
 const DEFAULTS = {
@@ -47,8 +48,15 @@ const DEFAULTS = {
   stranded_threshold_usdc: 1,
   telegram: null,            // { "token_file": "/etc/alloybot/telegram.token", "chat_id": "123" }
 };
-function loadConfig() {
-  let c = {}; try { c = JSON.parse(fs.readFileSync(F.config, "utf8")); } catch (e) { if (e.code !== "ENOENT") throw new Error(`config.json: ${e.message}`); }
+/* run/once require the file: a skipped provisioning step must not start live loops on the defaults above. status may
+   run without it (it signs nothing) and reports what the defaults would be. */
+function loadConfig(required) {
+  let c = {};
+  try { c = JSON.parse(fs.readFileSync(F.config, "utf8")); }
+  catch (e) {
+    if (e.code !== "ENOENT") throw new Error(`config.json: ${e.message}`);
+    if (required) throw Object.assign(new Error(`${F.config} is missing; copy config.example.json there before running`), { noConfig: true });
+  }
   const cfg = { ...DEFAULTS, ...c, gas_floor: { ...DEFAULTS.gas_floor, ...(c.gas_floor || {}) }, gas_refill_usdc: { ...DEFAULTS.gas_refill_usdc, ...(c.gas_refill_usdc || {}) } };
   if (!(cfg.gas_min_value_pct >= 50 && cfg.gas_min_value_pct <= 100)) throw new Error("gas_min_value_pct must be in [50, 100]");
   if (!(cfg.target_inj_pct > 0 && cfg.target_inj_pct <= 100)) throw new Error("target_inj_pct must be in (0, 100]");
@@ -57,9 +65,30 @@ function loadConfig() {
 }
 const usdc = n => BigInt(Math.round(Number(n) * 1e6));
 
-/* ---------------- state journal (atomic writes) ---------------- */
-function loadState() { try { return JSON.parse(fs.readFileSync(F.state, "utf8")); } catch (e) { if (e.code === "ENOENT") return {}; throw new Error(`state.json unreadable (${e.message}); refusing to run without the journal`); } }
-function saveState(s) { const t = F.state + ".tmp"; fs.writeFileSync(t, JSON.stringify(s, null, 1)); fs.renameSync(t, F.state); }
+/* ---------------- state journal (atomic and durable) ----------------
+   The journal is written before every broadcast, so it has to survive a VM or host power loss: the temp file is
+   fsynced before the rename and the directory after it. JOURNAL_INITIALIZED marks a directory that has held a journal;
+   a missing state.json there is a lost journal (which could hide an in-flight stage), not a fresh wallet. */
+function durableWrite(file, text) {
+  const t = file + ".tmp", fd = fs.openSync(t, "w", 0o600);
+  try { fs.writeSync(fd, text); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  fs.renameSync(t, file);
+  try { const d = fs.openSync(DIR, "r"); try { fs.fsyncSync(d); } finally { fs.closeSync(d); } }
+  catch (e) { if (process.platform !== "win32") throw e; }   // Windows cannot fsync a directory; the bot runs on Linux
+}
+function loadState() {
+  try { return JSON.parse(fs.readFileSync(F.state, "utf8")); }
+  catch (e) {
+    if (e.code !== "ENOENT") throw new Error(`state.json unreadable (${e.message}); refusing to run without the journal`);
+    if (fs.existsSync(F.init)) throw Object.assign(new Error(`state.json is missing but ${F.init} says this directory has held a journal since ${fs.readFileSync(F.init, "utf8").trim()}. `
+      + `A lost journal could hide a loop in flight. Restore state.json, or, only if you have checked on chain that no loop is in flight, delete ${F.init}.`), { lostJournal: true, halt: true });
+    return {};
+  }
+}
+function saveState(s) {
+  durableWrite(F.state, JSON.stringify(s, null, 1));
+  if (!fs.existsSync(F.init)) durableWrite(F.init, new Date().toISOString() + "\n");
+}
 const today = () => new Date().toISOString().slice(0, 10);
 function rollDay(s) { if (s.day !== today()) Object.assign(s, { day: today(), loopsToday: 0, feesToday: "0", refillsToday: 0 }); }
 const addFee = (s, amt) => { s.feesToday = (BigInt(s.feesToday || 0) + BigInt(amt)).toString(); };
@@ -78,7 +107,8 @@ async function alert(cfg, text) {
 }
 function writeHalt(reason) {
   fs.writeFileSync(F.halted, `${new Date().toISOString()}\n${reason}\n\nInvestigate, then delete this file to let the bot run again.\n`);
-  const s = loadState(); s.haltedAt = new Date().toISOString(); saveState(s);
+  try { const s = loadState(); s.haltedAt = new Date().toISOString(); saveState(s); }
+  catch (e) { if (!e.lostJournal) throw e; }   // a lost journal is itself the halt reason; never write a fresh one here
 }
 /* HALTED was deleted: a person has looked. A stage with no recorded tx has nothing in flight, so it gets a fresh set
    of attempts; a stage with a recorded tx keeps it and is resolved against the chain as usual. */
@@ -133,9 +163,13 @@ async function tick(ctx) {
     else if (pending && Date.now() - pending.at < 45 * 60000) { saveState(s); return log(`${g.toUpperCase()} refill ${pending.hash} from ${new Date(pending.at).toISOString()} is still in flight; waiting`), "waiting"; }
     if ((s.refillsToday || 0) >= ctx.cfg.max_gas_refills_per_day) throw halt(`${g.toUpperCase()} gas is below its floor and today's ${ctx.cfg.max_gas_refills_per_day} refills are used up`);
     const spend = usdc(ctx.cfg.gas_refill_usdc?.[g] ?? 1);
+    // the daily fee cap is a hard ceiling for refills too: the refill plus a bound on its Osmosis fee must fit
+    const room = usdc(ctx.cfg.max_fee_usdc_per_day) - BigInt(s.feesToday || 0);
+    if (room < spend + REFILL_FEE_BOUND) { saveState(s); return log(`${g.toUpperCase()} gas is below its floor but a ${fmtUnits(spend)} refill does not fit in today's remaining fee budget ${fmtUnits(room > 0n ? room : 0n)}; waiting for 00:00 UTC`), "capped"; }
     try {
-      await refillGas(g, ctx, m => log(`[gas ${g}]`, m), async tx => {   // counted at signing, before broadcast
-        s.refillsToday = (s.refillsToday || 0) + 1; s.refillPending = { ...s.refillPending, [g]: { at: Date.now(), hash: tx.hash } }; addFee(s, spend); saveState(s);
+      await refillGas(g, ctx, m => log(`[gas ${g}]`, m), async tx => {   // counted at signing, before broadcast, with its own tx fee
+        s.refillsToday = (s.refillsToday || 0) + 1; s.refillPending = { ...s.refillPending, [g]: { at: Date.now(), hash: tx.hash } };
+        addFee(s, spend + (tx.feeDenom === K.ALL ? BigInt(tx.fee || 0) : 0n)); saveState(s);
       });
     } catch (e) {
       if (!e.requote || DRY) throw e;
@@ -236,9 +270,10 @@ async function main() {
   if (cmd === "addresses") { const { W } = loadWallet(); console.log(JSON.stringify(W, null, 1)); return; }
   fs.mkdirSync(DIR, { recursive: true });
   const wallet = loadWallet();
-  const mk = () => { const cfg = loadConfig(); return { W: wallet.W, wallet, cfg, signOpts: { dryRun: DRY, osmoFeeMargin: cfg.osmo_fee_margin } }; };
+  const mk = () => { const cfg = loadConfig(cmd !== "status"); return { W: wallet.W, wallet, cfg, signOpts: { dryRun: DRY, osmoFeeMargin: cfg.osmo_fee_margin } }; };
   if (cmd === "status") return status(mk());
   if (cmd !== "run" && cmd !== "once") throw new Error(`unknown command ${cmd}`);
+  loadConfig(true);   // fail at startup, not on the first tick, when config.json is missing or invalid
   lock();
   log(`alloybot ${cmd}${DRY ? " (dry run)" : ""} for ${wallet.W.osmo} / ${wallet.W.inj} / ${wallet.W.evm}, state in ${DIR}`);
   let lastHaltLog = 0, transient = 0;

@@ -9,7 +9,7 @@
  */
 import fs from "node:fs";
 import { P } from "./page.mjs";
-import { deriveWallet, SignDoc, signCosmosBytes, signEip1559, rlp } from "./sign.mjs";
+import { deriveWallet, SignDoc, signCosmosBytes, signEip1559, rlp, sendRawEvm } from "./sign.mjs";
 import { deficit, sharePct, quotaRoom, gasSpec } from "./chain.mjs";
 import { tightenMinAsset } from "./stages.mjs";
 import { makeRunner, MAX_SIGNED_ATTEMPTS, MAX_REQUOTES } from "./cycle.mjs";
@@ -57,6 +57,23 @@ ok(hex(key("injective-1").pub) === G.injPub, "injective compressed pubkey == eth
 }
 let bad = false; try { deriveWallet("test test test"); } catch { bad = true; }
 ok(bad, "invalid mnemonic refused");
+
+/* ---------- EVM send classification: only a confirmed refusal may be forgotten ---------- */
+{
+  const fake = (send, byHash = null, receipt = null) => async (url, method) => {
+    if (method === "eth_sendRawTransaction") { if (send instanceof Error) throw send; return send; }
+    if (byHash instanceof Error) throw byHash;
+    return method === "eth_getTransactionByHash" ? { result: byHash } : { result: receipt };
+  };
+  const go = f => sendRawEvm("43114", "0x02", "0xabc", f);
+  ok((await go(fake(new Error("fetch failed")))).ambiguous, "transport error (timeout, reset) is ambiguous, not a refusal");
+  ok((await go(fake({ result: "0xabc" }))).accepted, "a hash result is accepted");
+  ok((await go(fake({ error: { message: "already known" } }))).accepted, "already known is accepted");
+  ok((await go(fake({ error: { message: "nonce too low" } }))).ambiguous, "nonce too low is ambiguous (may be this tx, mined)");
+  ok((await go(fake({ error: { message: "insufficient funds for gas * price + value" } }))).refused, "explicit refusal with an unknown hash is a refusal");
+  ok((await go(fake({ error: { message: "insufficient funds" } }, { hash: "0xabc" }))).accepted, "explicit error but the node knows the hash: accepted");
+  ok((await go(fake({ error: { message: "insufficient funds" } }, new Error("timeout")))).ambiguous, "explicit error but the hash lookup failed: ambiguous");
+}
 
 /* ---------- decision math ---------- */
 {
@@ -188,6 +205,14 @@ const fresh = (amt = "100000000") => ({ cycle: { id: "t", amountIn: amt, idx: 0,
   ok(!s.cycle.stages.A1.tx, "without anything signed");
 }
 
+{
+  const amb = Object.assign(new Error("43114 send of 0xH is unconfirmed (fetch failed)"), { afterSign: true });
+  const h = harness({ A2: { send: [amb] } }), s = fresh();
+  try { await h.go(s); ok(false, "ambiguous send propagates"); } catch (e) { ok(!e.halt && /unconfirmed/.test(e.message), "an ambiguous send is a transient error, not a halt"); }
+  ok(s.cycle.stages.A2.tx && s.cycle.stages.A2.signed === 1, "and the signed tx stays journaled");
+  await h.go(s);
+  ok(h.calls.filter(c => c === "A2:send").length === 1 && h.calls.includes("A2:state"), "the next run resolves it by state instead of signing a second burn");
+}
 {
   const rq = () => Object.assign(new Error("route refused: route: expected exactly one swap hop, got 3"), { requote: true });
   const h = harness({ A3: { send: [rq(), rq()] } }), s = fresh();
