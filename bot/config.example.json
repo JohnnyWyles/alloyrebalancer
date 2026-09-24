@@ -15,5 +15,6 @@
   "osmo_fee_margin": 2,
   "rate_limit_margin_pct": 1,
   "stranded_threshold_usdc": 1,
+  "auto_recover": true,
   "telegram": null
 }

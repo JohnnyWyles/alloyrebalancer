@@ -12,7 +12,7 @@ import { P } from "./page.mjs";
 import { deriveWallet, SignDoc, signCosmosBytes, signEip1559, rlp, sendRawEvm } from "./sign.mjs";
 import { deficit, sharePct, quotaRoom, gasSpec } from "./chain.mjs";
 import { tightenMinAsset } from "./stages.mjs";
-import { makeRunner, MAX_SIGNED_ATTEMPTS, MAX_REQUOTES, fitsFeeCap, loopLossBound, nextUtcMidnight } from "./cycle.mjs";
+import { makeRunner, MAX_SIGNED_ATTEMPTS, MAX_REQUOTES, fitsFeeCap, loopLossBound, nextUtcMidnight, planRecovery } from "./cycle.mjs";
 
 const FIX = p => JSON.parse(fs.readFileSync(new URL("../test-fixtures/" + p, import.meta.url), "utf8"));
 let pass = 0, fail = 0;
@@ -156,7 +156,7 @@ function harness(behaviour, cfg = {}) {
     },
     async refunded() { calls.push(`${key}:refunded`); return behaviour[key]?.refunded?.shift?.() ?? false; },
   });
-  const STAGES = { A1: mk("A1"), A2: mk("A2"), A3: mk("A3") };
+  const STAGES = { A1: mk("A1"), A2: mk("A2"), A3: mk("A3"), N0: mk("N0") };
   const run = makeRunner({ STAGES, ORDER: ["A1", "A2", "A3"], saveState: s => saved.push(JSON.parse(JSON.stringify(s))), log: () => {}, addFee: (s, a) => { s.fees = (BigInt(s.fees || 0) + BigInt(a)).toString(); }, retryMs: 0, refundRetryMs: 0, requoteMs: 0 });
   const ctx = { cfg: { max_loop_loss_bps: 10, ...cfg }, capMicro: cfg.capMicro ?? 5000000n };
   return { calls, saved, go: s => run(ctx, s) };
@@ -265,6 +265,32 @@ const fresh = (amt = "100000000") => ({ cycle: { id: "t", amountIn: amt, idx: 0,
   s.cycle.stages.A2 = { amountIn: "100000000", signed: 1, tx: { hash: "B", nonce: "5" } };
   ok(await h.go(s) === "done", "a burn refused on rebroadcast is signed again and the loop completes");
   ok(h.calls.slice(0, 3).join() === "A2:state,A2:rebroadcast,A2:send" && s.history.at(-1).out === "100000000", "state, rebroadcast refused, one new signature");
+}
+{
+  const O = ["A1", "A2", "A3"], z = { noble: 0n, avaxUsdc: 0n, injUsdc: 0n };
+  ok(planRecovery(z, 1000000n, O) === null, "nothing outside the alloy: no recovery");
+  ok(planRecovery({ ...z, injUsdc: 999999n }, 1000000n, O) === null, "dust below the threshold is left alone");
+  const pi = planRecovery({ ...z, injUsdc: 99999331n, avaxUsdc: 5000000n }, 1000000n, O);
+  ok(pi.idx === 2 && pi.order === O && pi.stages.A2.received === "99999331" && pi.amountIn === "99999331", "USDC.inj on Injective first: resume at A3 with the whole balance");
+  const pa = planRecovery({ ...z, avaxUsdc: 99994737n }, 1000000n, O);
+  ok(pa.idx === 1 && pa.stages.A1.received === "99994737", "USDC on Avalanche: resume at A2");
+  const pn = planRecovery({ ...z, noble: 100000000n }, 1000000n, O);
+  ok(pn.order.join() === "N0" && pn.idx === 0 && pn.amountIn === "100000000", "USDC.noble on Osmosis: the single 1:1 swap stage");
+}
+{
+  const h = harness({}), s = { cycle: planRecovery({ noble: 0n, avaxUsdc: 0n, injUsdc: 99999331n }, 1000000n, ["A1", "A2", "A3"]) }; s.loopsToday = 7;
+  ok(await h.go(s) === "done", "an Injective recovery completes");
+  ok(h.calls.join() === "A3:send,A3:arrive", "running only A3");
+  ok(s.loopsToday === 7 && s.history.at(-1).recovery === "USDC.inj on Injective" && s.cycle === null, "and does not count as a loop");
+}
+{
+  const h = harness({}), s = { cycle: planRecovery({ noble: 100000000n, avaxUsdc: 0n, injUsdc: 0n }, 1000000n, ["A1", "A2", "A3"]) };
+  ok(await h.go(s) === "done" && h.calls.join() === "N0:send,N0:arrive", "a USDC.noble recovery is one swap");
+}
+{
+  // A1's IBC hop refunded: the stage is retried (resending the refunded USDC.noble), not halted
+  const h = harness({ A1: { arrive: [new Error("Avalanche USDC rose by only 0; expected 99.99")], refunded: [true] } }), s = fresh();
+  ok(await h.go(s) === "done" && h.calls.filter(c => c === "A1:send").length === 2 && s.cycle === null, "a refunded A1 is retried after proof and the loop completes");
 }
 {
   const rq = () => Object.assign(new Error("route refused: route: expected exactly one swap hop, got 3"), { requote: true });

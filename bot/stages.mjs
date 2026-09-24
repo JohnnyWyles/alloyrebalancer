@@ -34,6 +34,7 @@ const refused = v => requote("route refused: " + v.errs.join("; "));
 const avaxUsdc = ctx => erc20BalanceOf(AVAX, H.usdc, ctx.W.evm);
 const injUsdc = ctx => bankBalance("injective-1", ctx.W.inj, K.INJ_ERC20);
 const osmoAll = ctx => bankBalance("osmosis-1", ctx.W.osmo, K.ALL);
+const osmoNoble = ctx => bankBalance("osmosis-1", ctx.W.osmo, K.NOBLE);
 
 async function needRateRoom(denom, direction, channel, amount, ctx) {
   const h = await headroom(denom, direction, channel);
@@ -54,7 +55,9 @@ export const STAGES = {
     ...cosmosTx("osmosis-1"),
     async send(ctx, st, note, onSigned) {
       const amountIn = st.amountIn;
-      if (await osmoAll(ctx) < BigInt(amountIn)) throw halt(`allUSDC balance is below the ${fmtUnits(amountIn)} this loop was started with`);
+      // after a refunded IBC hop (refunded() below) the USDC.noble is already on Osmosis: send it again without swapping more
+      const resend = st.refunds > 0 && await osmoNoble(ctx) >= BigInt(amountIn);
+      if (!resend && await osmoAll(ctx) < BigInt(amountIn)) throw halt(`allUSDC balance is below the ${fmtUnits(amountIn)} this loop was started with`);
       await assertChannel("osmosis-1", K.OSMO_TO_NOBLE, "noble-1");
       await needRateRoom(K.NOBLE, "out", K.OSMO_TO_NOBLE, amountIn, ctx);
       const before = await avaxUsdc(ctx);
@@ -62,18 +65,44 @@ export const STAGES = {
       const v = validateNobleToHub(res, { osmo: ctx.W.osmo, evm: ctx.W.evm, amountIn, hub: AVAX }); if (!v.ok) throw refused(v);
       Object.assign(st, { before: before.toString(), expected: v.amountOut });
       const anys = [
-        Any("/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn", MsgSwapExactAmountIn({ sender: ctx.W.osmo, routes: [{ poolId: K.POOL, tokenOutDenom: K.NOBLE }],
-          tokenIn: { denom: K.ALL, amount: amountIn }, tokenOutMinAmount: amountIn })),   // 1:1 or the whole tx fails
+        ...(resend ? [] : [Any("/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn", MsgSwapExactAmountIn({ sender: ctx.W.osmo, routes: [{ poolId: K.POOL, tokenOutDenom: K.NOBLE }],
+          tokenIn: { denom: K.ALL, amount: amountIn }, tokenOutMinAmount: amountIn }))]),   // 1:1 or the whole tx fails
         skipMsgToAny(res.txs[0].cosmos_tx.msgs[0]),
       ];
-      note(`swap ${fmtUnits(amountIn)} allUSDC -> USDC.noble, IBC to Noble orbiter, ${fmtUnits(v.amountOut)} USDC expected on Avalanche`);
+      note(`${resend ? `resend the refunded ${fmtUnits(amountIn)} USDC.noble` : `swap ${fmtUnits(amountIn)} allUSDC -> USDC.noble`}, IBC to Noble orbiter, ${fmtUnits(v.amountOut)} USDC expected on Avalanche`);
       return signAndBroadcast("osmosis-1", ctx.wallet, anys, note, onSigned, ctx.signOpts);
     },
     async arrive(ctx, st, note) {
       await track("osmosis-1", st.tx.hash, note);
       return waitArrival(() => avaxUsdc(ctx), BigInt(st.before), st.expected, "Avalanche USDC", ARRIVAL_POLLS);
     },
-    async refunded() { return false; },   // a refund lands as USDC.noble on Osmosis, not allUSDC: a human looks at it
+    /* the IBC hop to Noble was acked with an error or timed out: the USDC.noble is back on Osmosis and nothing reached
+       Avalanche. Polls up to 10 minutes, since the refund follows the ack. */
+    async refunded(ctx, st) {
+      for (let i = 0; i < 60; i++) {
+        const [noble, avax] = await Promise.all([osmoNoble(ctx), avaxUsdc(ctx)]);
+        if (avax - BigInt(st.before) >= BigInt(st.amountIn) / 2n) return false;   // it did arrive: not a refund
+        if (noble >= BigInt(st.amountIn)) return true;
+        await sleep(10000);
+      }
+      return false;
+    },
+  },
+
+  /* recovery only: USDC.noble found on Osmosis with no loop in flight goes back into the alloy at exactly 1:1 */
+  N0: {
+    title: "Osmosis: USDC.noble -> allUSDC (pool 3497), recovery",
+    ...cosmosTx("osmosis-1"),
+    async send(ctx, st, note, onSigned) {
+      const amountIn = st.amountIn, bal = await osmoNoble(ctx);
+      if (bal < BigInt(amountIn)) throw halt(`USDC.noble balance ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this recovery expects`);
+      Object.assign(st, { before: (await osmoAll(ctx)).toString(), expected: amountIn });
+      note(`swap ${fmtUnits(amountIn)} USDC.noble -> allUSDC on pool ${K.POOL}, minimum out ${fmtUnits(amountIn)}`);
+      return signAndBroadcast("osmosis-1", ctx.wallet, [Any("/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn", MsgSwapExactAmountIn({ sender: ctx.W.osmo,
+        routes: [{ poolId: K.POOL, tokenOutDenom: K.ALL }], tokenIn: { denom: K.NOBLE, amount: amountIn }, tokenOutMinAmount: amountIn }))], note, onSigned, ctx.signOpts);
+    },
+    async arrive(ctx, st) { return waitArrival(() => osmoAll(ctx), BigInt(st.before), st.expected, "allUSDC", ARRIVAL_POLLS); },
+    async refunded() { return false; },   // a swap either lands or fails in block; there is nothing to refund
   },
 
   A2: {

@@ -32,7 +32,7 @@ out of `../index.html`, so there is one copy of those rules.
 A loop starts only when all of these hold:
 
 - USDC.inj is below `target_inj_pct` by at least `min_loop_usdc`, and no loop is already in flight
-- the wallet holds idle allUSDC above `reserve_usdc`, and no funds are sitting outside the alloy from an earlier loop
+- the wallet holds idle allUSDC above `reserve_usdc`, and no funds are sitting outside the alloy (see recovery below)
 - the transmuter is active, has no corrupted variant and no limiter set
 - today's loop count and fee budget have room, and the IBC rate limits have room for the amount
 
@@ -80,10 +80,16 @@ in dollars and less per dollar moved.
 - **A retry needs proof.** A stage whose transaction landed is signed again only when its funds are provably back
   where the stage started (an A3 refund on Injective), at most three signatures per stage.
 - **Exact swaps.** Both pool 3497 swaps require the full amount out; a short fill reverts instead of landing short.
+- **Stray funds are brought home.** USDC.inj on Injective, USDC on Avalanche or USDC.noble on Osmosis found with no
+  loop in flight is first read again a minute later (a public endpoint a few blocks behind can still show what the
+  last stage just sent), and then recovered by the part of the loop that starts where it is: A3 alone, A2 then A3, or
+  a single 1:1 USDC.noble -> allUSDC swap on pool 3497. A refunded IBC hop in A1 is resent from the refunded
+  USDC.noble without swapping more. Recovery uses the same validators, journal and fee rules as a loop, runs even
+  when the pool is at target, and does not count as a loop. `auto_recover: false` halts instead.
 - **It halts rather than guessing.** A route refused six times in a row, a loop loss above `max_loop_loss_bps`, an
-  arrival that does not come, funds found outside the alloy, gas too low to pay for the next step, or a lost journal
-  each write a `HALTED` file and stop the bot until a person deletes it. A halted loop keeps its journal and resumes
-  from the stage it was on.
+  arrival that does not come and is not a proven refund, gas too low to pay for the next step, or a lost journal each
+  write a `HALTED` file and stop the bot until a person deletes it. A halted loop keeps its journal and resumes from
+  the stage it was on.
 - **Refused quotes are asked again.** Skip occasionally answers with a detour (a three-hop swap instead of pool 3497)
   that it no longer offers a minute later. Nothing is signed for a refused route, so the bot asks again after 30 s, 1,
   2, 4 and 8 minutes before halting. What is accepted does not change.
@@ -243,8 +249,8 @@ Halts you might see:
   means an adapter, recipient or route shape changed. Check the page and its tests before deleting `HALTED`.
 - **... balance cannot cover this tx**: AVAX or INJ ran out in the middle of a loop. Send some to the address in the
   message and delete `HALTED`; the stage resumes where it was.
-- **USDC.noble on Osmosis / USDC on Avalanche / USDC.inj on Injective with no loop in flight**: an earlier loop left
-  funds outside the alloy. Import the mnemonic into Keplr and use the page's stranded-funds offer, or move them by hand.
+- **... with no loop in flight, and auto_recover is off**: funds are outside the alloy and automatic recovery is
+  disabled. Turn it on, or import the mnemonic into Keplr and use the page's stranded-funds offer.
 - **rose by only ...**: a bridge leg did not deliver in time. Look up the recorded transaction in
   `/var/lib/alloybot/state.json`; when the funds land, deleting `HALTED` resumes the loop from that stage.
 - **state.json is missing but JOURNAL_INITIALIZED says ...**: the journal was lost (deleted, or the disk restored from
@@ -287,7 +293,8 @@ Halts and repeated errors are sent there.
 | `avax_max_fee_gwei` | 50 | above this the A2 send waits instead of paying |
 | `osmo_fee_margin` | 2 | Osmosis fee over the base fee, converted at the fee pool's spot price |
 | `rate_limit_margin_pct` | 1 | headroom kept below the IBC rate limits |
-| `stranded_threshold_usdc` | 1 | funds outside the alloy above this, with no loop in flight, halt |
+| `stranded_threshold_usdc` | 1 | funds outside the alloy above this, with no loop in flight, are recovered |
+| `auto_recover` | true | recover such funds automatically; false halts instead |
 | `telegram` | null | optional alerts, see above |
 
 ## Files
@@ -295,8 +302,8 @@ Halts and repeated errors are sent there.
 | File | What it is |
 | --- | --- |
 | `bot.mjs` | commands (`run`, `once`, `status`, `addresses`, `keygen`), decision loop, config, journal |
-| `cycle.mjs` | the resumable loop runner: resume, retry, re-quote, fee ceiling and halt rules |
-| `stages.mjs` | A1, A2, A3 |
+| `cycle.mjs` | the resumable loop runner (resume, retry, re-quote, fee ceiling and halt rules) and recovery planning |
+| `stages.mjs` | A1, A2, A3, and N0 (the USDC.noble recovery swap) |
 | `chain.mjs` | pool reads, IBC rate-limit headroom, balances, gas refills |
 | `sign.mjs` | key derivation, Cosmos sign-direct (secp256k1; ethsecp256k1 for Injective), EIP-1559, send classification |
 | `page.mjs`, `extract.mjs` | load constants, encoders, validators and network helpers from `../index.html` |

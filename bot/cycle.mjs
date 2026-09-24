@@ -21,12 +21,25 @@ export function fitsFeeCap({ capMicro, bookedMicro, amountIn, bps, feeMicro }) {
 }
 export const nextUtcMidnight = (now = Date.now()) => { const d = new Date(now); d.setUTCHours(24, 0, 0, 0); return d.getTime(); };
 
+/* Funds found outside the alloy with no loop in flight are brought home by the part of the loop that starts where they
+   are, so recovery uses the same stages, validators and journal as a loop. Closest to home first, one at a time.
+   Returns the cycle to run, or null. `b` holds the balances in base units. */
+export function planRecovery(b, strandMicro, ORDER, now = Date.now()) {
+  const id = "recover-" + new Date(now).toISOString().replace(/[-:]/g, "").slice(0, 15);
+  const at = (idx, prevKey, amt, what) => ({ id, recovery: what, amountIn: amt.toString(), idx, order: ORDER,
+    stages: { [prevKey]: { amountIn: amt.toString(), received: amt.toString(), signed: 0, recovered: true } } });
+  if (b.injUsdc >= strandMicro) return at(2, ORDER[1], b.injUsdc, "USDC.inj on Injective");
+  if (b.avaxUsdc >= strandMicro) return at(1, ORDER[0], b.avaxUsdc, "USDC on Avalanche");
+  if (b.noble >= strandMicro) return { id, recovery: "USDC.noble on Osmosis", amountIn: b.noble.toString(), idx: 0, order: ["N0"], stages: {} };
+  return null;
+}
+
 export function makeRunner({ STAGES, ORDER, saveState, log, addFee, retryMs = 120000, refundRetryMs = 300000, requoteMs = 30000 }) {
  return async function runCycle(ctx, s) {
-  const c = s.cycle;
-  for (; c.idx < ORDER.length; c.idx++) {
-    const key = ORDER[c.idx], S = STAGES[key];
-    const st = c.stages[key] ||= { amountIn: c.idx === 0 ? c.amountIn : c.stages[ORDER[c.idx - 1]].received, signed: 0 };
+  const c = s.cycle, order = c.order || ORDER;   // a recovery cycle carries its own (partial) stage order
+  for (; c.idx < order.length; c.idx++) {
+    const key = order[c.idx], S = STAGES[key];
+    const st = c.stages[key] ||= { amountIn: c.idx === 0 ? c.amountIn : c.stages[order[c.idx - 1]].received, signed: 0 };
     const note = m => log(`[${c.id} ${key}]`, m);
     const save = () => saveState(s);
     for (;;) {
@@ -86,12 +99,13 @@ export function makeRunner({ STAGES, ORDER, saveState, log, addFee, retryMs = 12
       }
     }
   }
-  const last = c.stages[ORDER[ORDER.length - 1]];
+  const last = c.stages[order[order.length - 1]];
   const out = BigInt(c.amountIn), back = BigInt(last.received), loss = out > back ? out - back : 0n;
   addFee(s, loss);
-  s.history = [...(s.history || []).slice(-49), { id: c.id, out: c.amountIn, back: last.received, done: new Date().toISOString() }];
-  s.cycle = null; s.loopsToday = (s.loopsToday || 0) + 1; saveState(s);
-  log(`[${c.id}] loop complete: ${fmtUnits(out)} out, ${fmtUnits(back)} back, loss ${fmtUnits(loss)}`);
+  s.history = [...(s.history || []).slice(-49), { id: c.id, out: c.amountIn, back: last.received, done: new Date().toISOString(), ...(c.recovery ? { recovery: c.recovery } : {}) }];
+  s.cycle = null; if (!c.recovery) s.loopsToday = (s.loopsToday || 0) + 1;   // a recovery brings funds home; it is not a loop
+  saveState(s);
+  log(`[${c.id}] ${c.recovery ? `recovered ${c.recovery}` : "loop complete"}: ${fmtUnits(out)} out, ${fmtUnits(back)} back, loss ${fmtUnits(loss)}`);
   if (loss * 10000n > out * BigInt(ctx.cfg.max_loop_loss_bps)) throw halt(`loop ${c.id} lost ${fmtUnits(loss)} allUSDC, above max_loop_loss_bps ${ctx.cfg.max_loop_loss_bps}`);
   return "done";
  };

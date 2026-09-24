@@ -18,7 +18,7 @@ import path from "node:path";
 import { P } from "./page.mjs";
 import { deriveWallet } from "./sign.mjs";
 import { STAGES, ORDER, halt, tightenMinAsset } from "./stages.mjs";
-import { makeRunner, fitsFeeCap, loopLossBound } from "./cycle.mjs";
+import { makeRunner, fitsFeeCap, loopLossBound, planRecovery } from "./cycle.mjs";
 import { readPool, deficit, sharePct, headroom, balances, refillGas } from "./chain.mjs";
 
 const { K, fmtUnits, setLog, PROVEN, sleep } = P;
@@ -46,6 +46,7 @@ const DEFAULTS = {
   osmo_fee_margin: 2,       // Osmosis fee (in allUSDC) over the base fee at the fee pool's spot price
   rate_limit_margin_pct: 1,
   stranded_threshold_usdc: 1,
+  auto_recover: true,        // bring funds found outside the alloy home by the loop's own stages; false halts instead
   telegram: null,            // { "token_file": "/etc/alloybot/telegram.token", "chat_id": "123" }
 };
 /* run/once require the file: a skipped provisioning step must not start live loops on the defaults above. status may
@@ -118,7 +119,7 @@ function writeHalt(reason) {
 function acknowledgeHalt(s) {
   if (!s.haltedAt) return;
   log(`halt from ${s.haltedAt} acknowledged`);
-  const st = s.cycle && s.cycle.stages[ORDER[s.cycle.idx]];
+  const st = s.cycle && s.cycle.stages[(s.cycle.order || ORDER)[s.cycle.idx]];
   if (st && !st.tx) { st.signed = 0; st.requotes = 0; st.retryAfter = undefined; }
   s.haltedAt = undefined; saveState(s);
 }
@@ -140,8 +141,26 @@ async function tick(ctx) {
   if (s.addrs && (s.addrs.osmo !== ctx.W.osmo || s.addrs.evm !== ctx.W.evm)) throw halt(`state.json belongs to ${s.addrs.osmo}, this mnemonic is ${ctx.W.osmo}`);
   s.addrs = { osmo: ctx.W.osmo, inj: ctx.W.inj, evm: ctx.W.evm };
   if (s.cycle && DRY) return log(`a real loop ${s.cycle.id} is in flight; dry run does nothing while it is`), "busy";
-  if (s.cycle) { log(`resuming loop ${s.cycle.id} at ${ORDER[s.cycle.idx]}`); return runCycle(ctx, s); }
+  if (s.cycle) { log(`resuming ${s.cycle.recovery ? "recovery" : "loop"} ${s.cycle.id} at ${(s.cycle.order || ORDER)[s.cycle.idx]}`); return runCycle(ctx, s); }
   if (!ctx.cfg.enabled || fs.existsSync(F.stop)) { saveState(s); return "disabled"; }
+
+  /* Funds outside the alloy with no loop in flight. A public endpoint a few blocks behind can still show what the last
+     stage just sent, so a sighting only counts once a second reading at least 50 s later agrees; then the part of the
+     loop that starts where the funds are brings them home. This runs whether or not the pool is at target. */
+  const sb = await balances(ctx.W), strand = usdc(ctx.cfg.stranded_threshold_usdc);
+  const plan = planRecovery(sb, strand, ORDER);
+  if (!plan) { if (s.strandSeen) { log(`funds outside the alloy (${s.strandSeen.what}) are gone on a second reading: it was a lagging endpoint`); s.strandSeen = undefined; saveState(s); } }
+  else if (!s.strandSeen || s.strandSeen.what !== plan.recovery || Date.now() - s.strandSeen.at > 15 * 60000) {
+    s.strandSeen = { what: plan.recovery, at: Date.now() }; saveState(s);
+    return log(`${fmtUnits(plan.amountIn)} ${plan.recovery} with no loop in flight; reading again in a minute before recovering it`), "rechecking";
+  } else if (Date.now() - s.strandSeen.at < 50000) return "rechecking";
+  else {
+    if (!ctx.cfg.auto_recover) throw halt(`${fmtUnits(plan.amountIn)} ${plan.recovery} with no loop in flight, and auto_recover is off. Recover it (the page's stranded-funds offer), then delete HALTED.`);
+    if (DRY) return log(`[dry] would recover ${fmtUnits(plan.amountIn)} ${plan.recovery} via ${plan.order.slice(plan.idx).join(" -> ")}`), "dry";
+    s.strandSeen = undefined; s.cycle = plan; saveState(s);
+    await alert(ctx.cfg, `recovering ${fmtUnits(plan.amountIn)} ${plan.recovery} via ${plan.order.slice(plan.idx).join(" -> ")}`);
+    return runCycle(ctx, s);
+  }
   if (s.waitUntil && Date.now() < s.waitUntil) return "waiting";
 
   const pool = await readPool();
@@ -152,9 +171,7 @@ async function tick(ctx) {
   log(`pool: USDC.inj ${sharePct(pool).toFixed(2)}% (target ${ctx.cfg.target_inj_pct}%), short by ${fmtUnits(need)}`);
   if (need < usdc(ctx.cfg.min_loop_usdc)) { saveState(s); return "at-target"; }
 
-  const b = await balances(ctx.W), strand = usdc(ctx.cfg.stranded_threshold_usdc);
-  for (const [what, v] of [["USDC.noble on Osmosis", b.noble], ["USDC on Avalanche", b.avaxUsdc], ["USDC.inj on Injective", b.injUsdc]])
-    if (v >= strand) throw halt(`${fmtUnits(v)} ${what} with no loop in flight: an earlier loop left funds outside the alloy. Recover them (the page's stranded-funds offer), then delete HALTED.`);
+  const b = sb;   // the balances read for the recovery check above
 
   for (const [g, bal, dec] of [["avax", b.avax, 18], ["inj", b.inj, 18]]) {
     if (Number(bal) / 10 ** dec >= ctx.cfg.gas_floor[g]) continue;
