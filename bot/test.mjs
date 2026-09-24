@@ -98,7 +98,11 @@ ok(bad, "invalid mnemonic refused");
   ok(quotaRoom(q("100000", "300000", later), "in", now).room === 1000000n, "net outflow leaves the full inflow cap");
   ok(quotaRoom(q("0", "200000", later), "out", now).room === 50000n, "outflow room at 25% send");
   ok(quotaRoom(q("0", "900000", later), "out", now).room === 0n, "exhausted quota has no room");
-  ok(quotaRoom(q("999999", "0", past), "in", now).room === 1000000n && quotaRoom(q("999999", "0", past), "in", now).resetsAt === null, "expired window counts as reset");
+  // channel_value is 1,000,000 in the stale cache; the window resets to the current supply (here 600,000)
+  ok(quotaRoom(q("999999", "0", past), "in", now, 600000n).room === 600000n && quotaRoom(q("999999", "0", past), "in", now, 600000n).resetsAt === null, "expired window is sized from the supply it will reset to, not the stale cache");
+  let threw = false; try { quotaRoom(q("0", "0", past), "in", now); } catch { threw = true; }
+  ok(threw, "an expired window without a current supply is refused, never guessed");
+  ok(quotaRoom(q("300000", "100000", later), "in", now, 1n).room === 800000n, "a live window ignores the supply and uses its own snapshot");
   ok(quotaRoom(q("1", "0", later), "in", now).resetsAt === Number(BigInt(later) / 1000000n), "resetsAt is the window end in ms");
 }
 

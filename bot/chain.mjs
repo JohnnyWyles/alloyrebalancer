@@ -43,10 +43,17 @@ async function quotasFor(channel, denom) {
   try { return (await smartQuery(await rateLimiter(), { get_quotas: { channel_id: channel, denom } })) || []; }
   catch (e) { if (/not found/i.test(e.message)) return []; throw e; }
 }
-export function quotaRoom(q, direction, nowNs) {
+/* An expired window restarts on the next transfer and re-snapshots channel_value from the denom's supply at that moment
+   (rate_limit.rs allow_transfer -> calculate_channel_value; for an IBC denom inbound, the supply itself; outbound, supply
+   plus the amount sent, so supply is the conservative figure). The cached channel_value of an expired window is stale
+   and can be far above the value it will reset to, so expired windows are sized from resetValue (the current supply). */
+export function quotaRoom(q, direction, nowNs, resetValue) {
   const pct = BigInt(direction === "in" ? q.quota.max_percentage_recv : q.quota.max_percentage_send);
+  if (BigInt(q.flow.period_end) < nowNs) {
+    if (resetValue === undefined) throw new Error(`quota ${q.quota.name} has expired and no current supply was given to size its reset`);
+    return { room: BigInt(resetValue) * pct / 100n, resetsAt: null };
+  }
   const cap = BigInt(q.quota.channel_value || 0) * pct / 100n;
-  if (BigInt(q.flow.period_end) < nowNs) return { room: cap, resetsAt: null };
   const inflow = BigInt(q.flow.inflow), outflow = BigInt(q.flow.outflow);
   const used = direction === "in" ? (inflow > outflow ? inflow - outflow : 0n) : (outflow > inflow ? outflow - inflow : 0n);
   return { room: cap > used ? cap - used : 0n, resetsAt: Number(BigInt(q.flow.period_end) / 1000000n) };
@@ -55,9 +62,15 @@ export function quotaRoom(q, direction, nowNs) {
 export async function headroom(denom, direction, channel) {
   const qs = [...await quotasFor("any", denom), ...await quotasFor(channel, denom)];
   const nowNs = BigInt(Date.now()) * 1000000n;
+  let supply;
+  if (qs.some(q => BigInt(q.flow.period_end) < nowNs)) {
+    const j = await lcdGet("osmosis-1", `/cosmos/bank/v1beta1/supply/by_denom?denom=${encodeURIComponent(denom)}`);
+    if (j.amount?.amount === undefined) throw new Error(`no supply returned for ${denom}`);
+    supply = BigInt(j.amount.amount);
+  }
   let best = { room: null, resetsAt: null, quota: null };
   for (const q of qs) {
-    const r = quotaRoom(q, direction, nowNs);
+    const r = quotaRoom(q, direction, nowNs, supply);
     if (best.room === null || r.room < best.room) best = { ...r, quota: q.quota.name };
   }
   return best;
