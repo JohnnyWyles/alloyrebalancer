@@ -9,6 +9,8 @@
   "max_fee_usdc_per_day": 5,
   "gas_floor": { "avax": 0.005, "inj": 0.001 },
   "max_gas_refills_per_day": 4,
+  "gas_refill_usdc": { "avax": 2, "inj": 1 },
+  "gas_min_value_pct": 80,
   "avax_max_fee_gwei": 50,
   "osmo_fee_margin": 2,
   "rate_limit_margin_pct": 1,

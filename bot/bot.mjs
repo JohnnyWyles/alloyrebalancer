@@ -39,6 +39,8 @@ const DEFAULTS = {
   max_fee_usdc_per_day: 5,   // loop losses + gas refills + Osmosis fees, UTC day
   gas_floor: { avax: 0.005, inj: 0.001 },
   max_gas_refills_per_day: 4,
+  gas_refill_usdc: { avax: 2, inj: 1 },   // allUSDC per refill; Axelar's flat fee makes small AVAX refills poor value
+  gas_min_value_pct: 80,     // a refill quote must deliver at least this % of its allUSDC in gas
   avax_max_fee_gwei: 50,
   osmo_fee_margin: 2,       // Osmosis fee (in allUSDC) over the base fee at the fee pool's spot price
   rate_limit_margin_pct: 1,
@@ -47,7 +49,8 @@ const DEFAULTS = {
 };
 function loadConfig() {
   let c = {}; try { c = JSON.parse(fs.readFileSync(F.config, "utf8")); } catch (e) { if (e.code !== "ENOENT") throw new Error(`config.json: ${e.message}`); }
-  const cfg = { ...DEFAULTS, ...c, gas_floor: { ...DEFAULTS.gas_floor, ...(c.gas_floor || {}) } };
+  const cfg = { ...DEFAULTS, ...c, gas_floor: { ...DEFAULTS.gas_floor, ...(c.gas_floor || {}) }, gas_refill_usdc: { ...DEFAULTS.gas_refill_usdc, ...(c.gas_refill_usdc || {}) } };
+  if (!(cfg.gas_min_value_pct >= 50 && cfg.gas_min_value_pct <= 100)) throw new Error("gas_min_value_pct must be in [50, 100]");
   if (!(cfg.target_inj_pct > 0 && cfg.target_inj_pct <= 100)) throw new Error("target_inj_pct must be in (0, 100]");
   if (!(cfg.loop_usdc >= cfg.min_loop_usdc && cfg.min_loop_usdc > 0)) throw new Error("need loop_usdc >= min_loop_usdc > 0");
   return cfg;
@@ -122,12 +125,17 @@ async function tick(ctx) {
 
   for (const [g, bal, dec] of [["avax", b.avax, 18], ["inj", b.inj, 18]]) {
     if (Number(bal) / 10 ** dec >= ctx.cfg.gas_floor[g]) continue;
-    // a refill still in flight (slow Axelar delivery, or an error while waiting) must not be bought a second time
+    // a refill still in flight (slow Axelar delivery, or an error while waiting) must not be bought a second time.
+    // Only signed refills are recorded ({at, hash}); a bare timestamp from an earlier version was set before the route
+    // check and says nothing about a signature, so it is dropped.
     const pending = s.refillPending?.[g];
-    if (pending && Date.now() - pending < 45 * 60000) { saveState(s); return log(`${g.toUpperCase()} refill from ${new Date(pending).toISOString()} is still in flight; waiting`), "waiting"; }
+    if (typeof pending === "number") { delete s.refillPending[g]; log(`dropping unsigned ${g.toUpperCase()} refill marker from ${new Date(pending).toISOString()}`); }
+    else if (pending && Date.now() - pending.at < 45 * 60000) { saveState(s); return log(`${g.toUpperCase()} refill ${pending.hash} from ${new Date(pending.at).toISOString()} is still in flight; waiting`), "waiting"; }
     if ((s.refillsToday || 0) >= ctx.cfg.max_gas_refills_per_day) throw halt(`${g.toUpperCase()} gas is below its floor and today's ${ctx.cfg.max_gas_refills_per_day} refills are used up`);
-    if (!DRY) { s.refillsToday = (s.refillsToday || 0) + 1; s.refillPending = { ...s.refillPending, [g]: Date.now() }; addFee(s, usdc(1)); saveState(s); }   // counted before signing
-    await refillGas(g, ctx, m => log(`[gas ${g}]`, m));
+    const spend = usdc(ctx.cfg.gas_refill_usdc?.[g] ?? 1);
+    await refillGas(g, ctx, m => log(`[gas ${g}]`, m), async tx => {   // counted at signing, before broadcast
+      s.refillsToday = (s.refillsToday || 0) + 1; s.refillPending = { ...s.refillPending, [g]: { at: Date.now(), hash: tx.hash } }; addFee(s, spend); saveState(s);
+    });
     if (DRY) continue;   // a dry run goes on to the loop checks as if the refill had landed
     delete s.refillPending[g]; saveState(s);
     return "refilled";

@@ -10,7 +10,7 @@
 import fs from "node:fs";
 import { P } from "./page.mjs";
 import { deriveWallet, SignDoc, signCosmosBytes, signEip1559, rlp } from "./sign.mjs";
-import { deficit, sharePct, quotaRoom } from "./chain.mjs";
+import { deficit, sharePct, quotaRoom, gasSpec } from "./chain.mjs";
 import { tightenMinAsset } from "./stages.mjs";
 import { makeRunner, MAX_SIGNED_ATTEMPTS } from "./cycle.mjs";
 
@@ -76,6 +76,16 @@ ok(bad, "invalid mnemonic refused");
   ok(quotaRoom(q("0", "900000", later), "out", now).room === 0n, "exhausted quota has no room");
   ok(quotaRoom(q("999999", "0", past), "in", now).room === 1000000n && quotaRoom(q("999999", "0", past), "in", now).resetsAt === null, "expired window counts as reset");
   ok(quotaRoom(q("1", "0", later), "in", now).resetsAt === Number(BigInt(later) / 1000000n), "resetsAt is the window end in ms");
+}
+
+/* ---------- gas refill sizing ---------- */
+{
+  const g = gasSpec("avax", { gas_refill_usdc: { avax: 2 }, gas_min_value_pct: 80 });
+  ok(g.amount === "2000000" && g.minUsd === 1.6 && g.dst[1] === "43114", "AVAX refill sized from config with a proportional floor");
+  ok(P.GAS.avax.amount === "1000000" && P.GAS.avax.minUsd === 0.85, "the page's own Fund Gas entry is untouched");
+  ok(gasSpec("inj", { gas_refill_usdc: {}, gas_min_value_pct: 80 }).amount === "1000000", "a target missing from config falls back to 1 allUSDC");
+  let threw = false; try { gasSpec("avax", { gas_refill_usdc: { avax: 50 }, gas_min_value_pct: 80 }); } catch { threw = true; }
+  ok(threw, "an oversized refill is refused");
 }
 
 /* ---------- A3 min_asset tightening on the real Skip response ---------- */

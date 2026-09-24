@@ -73,18 +73,35 @@ export async function balances(W) {
   return { all, noble, avaxUsdc, avax, inj, injUsdc };
 }
 
-/* ---------------- gas refill: the page's Fund Gas route (allUSDC -> native gas, delivered to the bot's own address) ---------------- */
-export async function refillGas(target, ctx, note) {
-  const G = GAS[target], W = ctx.W;
+/* ---------------- gas refill: the page's Fund Gas route (allUSDC -> native gas, delivered to the bot's own address) ----------------
+   The page buys a fixed 1 allUSDC with a flat $0.85 floor. Axelar's fee toward Avalanche is flat (~$0.11), so the bot
+   sizes refills from config and scales the floor with the amount; the page's validator runs on that sized entry.
+   A quote that fails only on value is a wait (quotes move), anything else about the route halts. */
+export function gasSpec(target, cfg) {
+  const base = GAS[target], usdc = Number(cfg.gas_refill_usdc?.[target] ?? 1);
+  if (!(usdc > 0 && usdc <= 10)) throw new Error(`gas_refill_usdc.${target} must be in (0, 10]`);
+  return { ...base, amount: String(Math.round(usdc * 1e6)), minUsd: usdc * cfg.gas_min_value_pct / 100 };
+}
+function validateGasSized(res, ctx, G) {
+  const page = GAS[ctx.target];
+  GAS[ctx.target] = G;   // validateGas reads GAS[target] for the amount and floor; restored before anything awaits
+  try { return validateGas(res, ctx); } finally { GAS[ctx.target] = page; }
+}
+export async function refillGas(target, ctx, note, onSigned = async () => {}) {
+  const G = gasSpec(target, ctx.cfg), W = ctx.W;
   const recipient = { avax: W.evm, inj: W.inj }[target];
   const read = { avax: () => evmNative("43114", W.evm), inj: () => bankBalance("injective-1", W.inj, "inj") }[target];
   const addrs = { "osmosis-1": W.osmo, "injective-1": W.inj, "axelar-dojo-1": bech32Rehrp(W.osmo, "axelar"), "43114": W.evm };
   const res = await skipRoute(K.ALL, "osmosis-1", G.dst[0], G.dst[1], G.amount, addrs, { slippage_tolerance_percent: "1" });
-  const v = validateGas(res, { osmo: W.osmo, target, recipient, recipientHex: W.evm });
-  if (!v.ok) throw Object.assign(new Error(`gas route for ${G.sym} refused:\n  - ${v.errs.join("\n  - ")}`), { halt: true });
+  const v = validateGasSized(res, { osmo: W.osmo, target, recipient, recipientHex: W.evm }, G);
+  if (!v.ok) {
+    const valueOnly = v.errs.every(e => /^quote returns only/.test(e));
+    throw Object.assign(new Error(`gas route for ${G.sym} ${valueOnly ? "is below the value floor" : "refused"}: ${v.errs.join("; ")}`),
+      valueOnly ? { wait: true, until: Date.now() + 30 * 60000 } : { halt: true });
+  }
   const before = await read();
   note(`buying ${G.sym} gas with ${fmtUnits(G.amount)} allUSDC, about $${v.usd.toFixed(2)} delivered to ${recipient}`);
-  const { hash, fee } = await signAndBroadcast("osmosis-1", ctx.wallet, res.txs[0].cosmos_tx.msgs.map(skipMsgToAny), note, async () => {}, ctx.signOpts);
+  const { hash, fee } = await signAndBroadcast("osmosis-1", ctx.wallet, res.txs[0].cosmos_tx.msgs.map(skipMsgToAny), note, onSigned, ctx.signOpts);
   if (ctx.signOpts.dryRun) return { spent: 0n };
   await trackToCompletion("osmosis-1", hash, s => note("Skip: " + s));
   let after = before; for (let i = 0; i < 60 && after <= before; i++) { await sleep(5000); after = await read(); }

@@ -29,7 +29,9 @@ stays below target the next one starts as soon as the last one finishes. At 100 
 in bridge fees (quoted live on 2026-09-24) plus gas.
 
 **Gas looks after itself.** Osmosis fees are paid in allUSDC (a chain fee token), so the wallet never holds OSMO.
-When AVAX or INJ falls below its floor the bot buys about $0.90 of it with 1 allUSDC through the page's Fund Gas route.
+When AVAX or INJ falls below its floor the bot buys more with allUSDC through the page's Fund Gas route: 2 allUSDC
+for AVAX (Axelar takes a flat ~$0.11, so 1 allUSDC returned only $0.82 on 2026-09-24) and 1 allUSDC for INJ. A quote
+worth less than `gas_min_value_pct` of what it costs is not bought; the bot waits 30 minutes and asks again.
 
 **It halts rather than guessing.** A refused route, a loss above `max_loop_loss_bps`, an arrival that does not come,
 or funds found outside the alloy all write a `HALTED` file and stop the bot until a person deletes it. A halted loop
@@ -105,8 +107,8 @@ alloybotctl status
 of allUSDC, and the bot will refuse to start (it treats USDC.noble on Osmosis as funds stranded by a failed loop).
 Send allUSDC instead; the variant can be recovered later by importing the mnemonic into Keplr.
 
-What happens to the 105: the first run buys AVAX and INJ gas for 1 allUSDC each, and each loop is sized as
-`min(loop_usdc, allUSDC - reserve_usdc)`, so the first loop carries about 99.99 allUSDC. Send 106 if you want the
+What happens to the 105: the first run buys AVAX gas for 2 allUSDC and INJ gas for 1, and each loop is sized as
+`min(loop_usdc, allUSDC - reserve_usdc)`, so the first loop carries about 99 allUSDC. Send 108 if you want the
 first one to be a full 100.
 
 ### 6. Dry run
@@ -129,7 +131,7 @@ journalctl -u alloybot -f
 ```
 
 The first minutes: an AVAX refill (Axelar, a few minutes), an INJ refill, then `starting loop ...` and the three
-stages. After about 20 minutes: `loop complete: 99.99 out, 99.97 back, loss 0.02`. With `max_loops_per_day: 1` it then
+stages. After about 20 minutes: `loop complete: 99 out, 98.98 back, loss 0.02`. With `max_loops_per_day: 1` it then
 logs `max_loops_per_day reached` until 00:00 UTC.
 
 ### 8. Ramp up
@@ -192,6 +194,8 @@ Halts and repeated errors are sent there.
 | `max_fee_usdc_per_day` | 5 | loop losses + gas refills + Osmosis fees; reaching it pauses until 00:00 UTC |
 | `gas_floor` | avax 0.005, inj 0.001 | refill below these |
 | `max_gas_refills_per_day` | 4 | needing more halts |
+| `gas_refill_usdc` | avax 2, inj 1 | allUSDC spent per refill (at most 10) |
+| `gas_min_value_pct` | 80 | a refill quote must deliver at least this % of its cost in gas, otherwise it waits |
 | `avax_max_fee_gwei` | 50 | above this the A2 send waits instead of paying |
 | `osmo_fee_margin` | 2 | Osmosis fee over the base fee, at the fee pool's spot price |
 | `rate_limit_margin_pct` | 1 | headroom kept below the IBC rate limits |
