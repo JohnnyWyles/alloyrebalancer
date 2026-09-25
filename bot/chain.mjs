@@ -47,6 +47,8 @@ async function quotasFor(channel, denom) {
    (rate_limit.rs allow_transfer -> calculate_channel_value; for an IBC denom inbound, the supply itself; outbound, supply
    plus the amount sent, so supply is the conservative figure). The cached channel_value of an expired window is stale
    and can be far above the value it will reset to, so expired windows are sized from resetValue (the current supply).
+   A quota reset by its admin keeps its live window but clears channel_value to null; the contract fills it from the
+   supply on the next transfer (allow_transfer caches it when is_none()), so a null snapshot is sized from resetValue too.
    reservePct of each cap is left for other users: the bot's room is what remains below cap * (1 - reservePct/100). */
 export function quotaRoom(q, direction, nowNs, resetValue, reservePct = 0) {
   const pct = BigInt(direction === "in" ? q.quota.max_percentage_recv : q.quota.max_percentage_send);
@@ -55,7 +57,12 @@ export function quotaRoom(q, direction, nowNs, resetValue, reservePct = 0) {
     if (resetValue === undefined) throw new Error(`quota ${q.quota.name} has expired and no current supply was given to size its reset`);
     return { room: BigInt(resetValue) * pct / 100n * keepBps / 10000n, resetsAt: null };
   }
-  const cap = BigInt(q.quota.channel_value || 0) * pct / 100n * keepBps / 10000n;
+  let value = q.quota.channel_value;
+  if (value === null || value === undefined) {
+    if (resetValue === undefined) throw new Error(`quota ${q.quota.name} has no channel_value snapshot and no current supply was given to size it`);
+    value = resetValue;
+  }
+  const cap = BigInt(value) * pct / 100n * keepBps / 10000n;
   const inflow = BigInt(q.flow.inflow), outflow = BigInt(q.flow.outflow);
   const used = direction === "in" ? (inflow > outflow ? inflow - outflow : 0n) : (outflow > inflow ? outflow - inflow : 0n);
   return { room: cap > used ? cap - used : 0n, resetsAt: Number(BigInt(q.flow.period_end) / 1000000n) };
@@ -65,7 +72,7 @@ export async function headroom(denom, direction, channel, reservePct = 0) {
   const qs = [...await quotasFor("any", denom), ...await quotasFor(channel, denom)];
   const nowNs = BigInt(Date.now()) * 1000000n;
   let supply;
-  if (qs.some(q => BigInt(q.flow.period_end) < nowNs)) {
+  if (qs.some(q => BigInt(q.flow.period_end) < nowNs || q.quota.channel_value === null || q.quota.channel_value === undefined)) {
     const j = await lcdGet("osmosis-1", `/cosmos/bank/v1beta1/supply/by_denom?denom=${encodeURIComponent(denom)}`);
     if (j.amount?.amount === undefined) throw new Error(`no supply returned for ${denom}`);
     supply = BigInt(j.amount.amount);

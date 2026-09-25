@@ -108,6 +108,11 @@ ok(bad, "invalid mnemonic refused");
   ok(quotaRoom(q("100000", "300000", later), "in", now, undefined, 8).room === 920000n, "net outflow leaves the reserved cap, not the full cap");
   ok(quotaRoom(q("0", "240000", later), "out", now, undefined, 8).room === 0n, "net flow inside the reserve leaves no room");
   ok(quotaRoom(q("999999", "0", past), "in", now, 600000n, 8).room === 552000n, "an expired window's reset size is reserved too");
+  const reset = { quota: { name: "r", max_percentage_recv: 100, max_percentage_send: 25, channel_value: null }, flow: { inflow: "0", outflow: "0", period_end: later } };
+  ok(quotaRoom(reset, "in", now, 600000n).room === 600000n, "a freshly reset quota (null channel_value) is sized from the supply it will snapshot");
+  ok(quotaRoom(reset, "in", now, 600000n, 5).room === 570000n && quotaRoom(reset, "in", now, 600000n).resetsAt === Number(BigInt(later) / 1000000n), "a reset quota keeps its reserve and its live window end");
+  let threwNull = false; try { quotaRoom(reset, "in", now); } catch { threwNull = true; }
+  ok(threwNull, "a null channel_value without a current supply is refused, never read as zero room");
 }
 
 /* ---------- gas refill sizing ---------- */
