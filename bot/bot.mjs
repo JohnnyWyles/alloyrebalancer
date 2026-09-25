@@ -18,7 +18,7 @@ import path from "node:path";
 import { P } from "./page.mjs";
 import { deriveWallet } from "./sign.mjs";
 import { STAGES, ORDER, halt, tightenMinAsset } from "./stages.mjs";
-import { makeRunner, fitsFeeCap, loopLossBound, planRecovery } from "./cycle.mjs";
+import { makeRunner, fitsFeeCap, loopLossBound, cycleLossBound, planRecovery, nextUtcMidnight } from "./cycle.mjs";
 import { readPool, deficit, sharePct, headroom, balances, refillGas } from "./chain.mjs";
 
 const { K, fmtUnits, setLog, PROVEN, sleep } = P;
@@ -133,7 +133,54 @@ function loadWallet() {
   return deriveWallet(fs.readFileSync(file, "utf8"));
 }
 
-const runCycle = makeRunner({ STAGES, ORDER, saveState, log, addFee, notify: (ctx, text) => alert(ctx.cfg, text) });
+const runCycle = makeRunner({ STAGES, ORDER, saveState, log, addFee, notify: (ctx, text) => alert(ctx.cfg, text),
+  // a stage that cannot pay its gas mid-loop: refill from the Osmosis allUSDC reserve (independent of the funds in flight)
+  refillGas: async (ctx, s, g) => {
+    const r = await buyGas(ctx, s, g);
+    if (r.status !== "refilled") throw Object.assign(new Error(`mid-loop ${g.toUpperCase()} refill ${r.status}`), { wait: true, until: r.until });
+  } });
+
+/* ---------------- gas refills (between loops, and mid-loop when a stage cannot pay its gas) ----------------
+   Returns { status: "refilled" | "waiting" | "capped" | "dry", until? }. Never halts: a refill that cannot happen now is
+   retried later, and a person is told once when that is because of the daily limits or repeated route refusals. */
+async function buyGas(ctx, s, g) {
+  const G = g.toUpperCase(), wait = (status, until, msg) => { saveState(s); log(msg); return { status, until }; };
+  // a refill still in flight (slow Axelar delivery, or an error while waiting) must not be bought a second time.
+  // Only signed refills are recorded ({at, hash}); a bare timestamp from an earlier version is dropped.
+  const pending = s.refillPending?.[g];
+  if (typeof pending === "number") { delete s.refillPending[g]; log(`dropping unsigned ${G} refill marker from ${new Date(pending).toISOString()}`); }
+  else if (pending && Date.now() - pending.at < 45 * 60000) return wait("waiting", pending.at + 45 * 60000, `${G} refill ${pending.hash} from ${new Date(pending.at).toISOString()} is still in flight; waiting`);
+  if ((s.refillsToday || 0) >= ctx.cfg.max_gas_refills_per_day) {
+    if (s.refillCapAlerted !== s.day) { s.refillCapAlerted = s.day; await alert(ctx.cfg, `${G} gas is below its floor and today's ${ctx.cfg.max_gas_refills_per_day} refills are used up; waiting for 00:00 UTC. That many refills in a day is unusual: worth a look.`); }
+    return wait("capped", nextUtcMidnight(), `${G} gas is below its floor and today's refills are used up; waiting for 00:00 UTC`);
+  }
+  const spend = usdc(ctx.cfg.gas_refill_usdc?.[g] ?? 1);
+  // the daily fee cap is a hard ceiling for refills too: the refill plus a bound on its Osmosis fee must fit, and a cycle
+  // in flight keeps its reserved worst-case loss, which it books only when it completes
+  const inFlight = s.cycle ? cycleLossBound(s.cycle, s.cycle.order || ORDER, ctx.cfg.max_loop_loss_bps) : 0n;
+  const room = usdc(ctx.cfg.max_fee_usdc_per_day) - BigInt(s.feesToday || 0) - inFlight;
+  if (room < spend + REFILL_FEE_BOUND) return wait("capped", nextUtcMidnight(), `${G} gas is below its floor but a ${fmtUnits(spend)} refill does not fit in today's remaining fee budget ${fmtUnits(room > 0n ? room : 0n)}; waiting for 00:00 UTC`);
+  try {
+    await refillGas(g, ctx, m => log(`[gas ${g}]`, m), async tx => {   // counted at signing, before broadcast, with its own tx fee
+      const total = spend + BigInt(tx.feeAllUSDC || 0);
+      // the exact fee is known here: recheck the hard cap before anything is journaled or broadcast
+      if (total > room) throw Object.assign(new Error(`${G} refill costs ${fmtUnits(total)} with its fee, over today's remaining budget ${fmtUnits(room)}`), { feeCap: true });
+      s.refillsToday = (s.refillsToday || 0) + 1; s.refillPending = { ...s.refillPending, [g]: { at: Date.now(), hash: tx.hash } };
+      addFee(s, total); saveState(s);
+    });
+  } catch (e) {
+    if (e.feeCap) return wait("capped", nextUtcMidnight(), `${e.message}; not sent, waiting for 00:00 UTC`);
+    if (!e.requote || DRY) throw e;
+    // a refused gas route signed nothing: ask again every 10 minutes, and tell a person once after 6 in a row
+    const n = (s.gasRefusals?.[g] || 0) + 1; s.gasRefusals = { ...s.gasRefusals, [g]: n };
+    if (n === 6) await alert(ctx.cfg, `${G} gas route refused ${n} times in a row (still retrying every 10 min; nothing is signed). Latest: ${e.message}`);
+    return wait("waiting", Date.now() + 10 * 60000, `${e.message}; asking again in 10 minutes (refusal ${n} in a row)`);
+  }
+  if (s.gasRefusals?.[g]) s.gasRefusals[g] = 0;
+  if (DRY) return { status: "dry" };
+  delete s.refillPending[g]; saveState(s);
+  return { status: "refilled" };
+}
 
 /* ---------------- one decision ---------------- */
 async function tick(ctx) {
@@ -143,6 +190,12 @@ async function tick(ctx) {
   if (s.cycle && DRY) return log(`a real loop ${s.cycle.id} is in flight; dry run does nothing while it is`), "busy";
   if (s.cycle) { log(`resuming ${s.cycle.recovery ? "recovery" : "loop"} ${s.cycle.id} at ${(s.cycle.order || ORDER)[s.cycle.idx]}`); return runCycle(ctx, s); }
   if (!ctx.cfg.enabled || fs.existsSync(F.stop)) { saveState(s); return "disabled"; }
+
+  // pool health first: recovery swaps through pool 3497 too (A3's hook swap, N0), so it waits for a healthy pool as well
+  const pool = await readPool();
+  if (!pool.active) return log("transmuter is inactive (frozen); not starting"), "frozen";
+  if (pool.corrupted.length) return log("transmuter has corrupted denoms:", pool.corrupted.join(", ")), "frozen";
+  if (pool.limiters.length) return log(`transmuter has ${pool.limiters.length} limiter(s) set; not starting until they are reviewed`), "limited";
 
   /* Funds outside the alloy with no loop in flight. A public endpoint a few blocks behind can still show what the last
      stage just sent, so a sighting only counts once a second reading at least 50 s later agrees; then the part of the
@@ -157,16 +210,18 @@ async function tick(ctx) {
   else {
     if (!ctx.cfg.auto_recover) throw halt(`${fmtUnits(plan.amountIn)} ${plan.recovery} with no loop in flight, and auto_recover is off. Recover it (the page's stranded-funds offer), then delete HALTED.`);
     if (DRY) return log(`[dry] would recover ${fmtUnits(plan.amountIn)} ${plan.recovery} via ${plan.order.slice(plan.idx).join(" -> ")}`), "dry";
+    // the recovery's own worst-case loss (and N0's Osmosis fee) must fit today's budget before it starts: A2/A3 pay no
+    // allUSDC fee, so nothing inside the runner would check it before the loss is booked at completion
+    const bound = cycleLossBound(plan, plan.order, ctx.cfg.max_loop_loss_bps);
+    if (!fitsFeeCap({ capMicro: ctx.capMicro, bookedMicro: s.feesToday, feeMicro: plan.order.includes("N0") ? REFILL_FEE_BOUND : 0n, lossMicro: bound })) {
+      s.waitUntil = nextUtcMidnight(); saveState(s);
+      return log(`recovering ${fmtUnits(plan.amountIn)} ${plan.recovery} (worst-case loss ${fmtUnits(bound)}) does not fit today's remaining fee budget; the funds stay where they are until 00:00 UTC`), "capped";
+    }
     s.strandSeen = undefined; s.cycle = plan; saveState(s);
     await alert(ctx.cfg, `recovering ${fmtUnits(plan.amountIn)} ${plan.recovery} via ${plan.order.slice(plan.idx).join(" -> ")}`);
     return runCycle(ctx, s);
   }
   if (s.waitUntil && Date.now() < s.waitUntil) return "waiting";
-
-  const pool = await readPool();
-  if (!pool.active) return log("transmuter is inactive (frozen); not starting"), "frozen";
-  if (pool.corrupted.length) return log("transmuter has corrupted denoms:", pool.corrupted.join(", ")), "frozen";
-  if (pool.limiters.length) return log(`transmuter has ${pool.limiters.length} limiter(s) set; not starting until they are reviewed`), "limited";
   const need = deficit(pool, ctx.cfg.target_inj_pct);
   log(`pool: USDC.inj ${sharePct(pool).toFixed(2)}% (target ${ctx.cfg.target_inj_pct}%), short by ${fmtUnits(need)}`);
   if (need < usdc(ctx.cfg.min_loop_usdc)) { saveState(s); return "at-target"; }
@@ -175,39 +230,10 @@ async function tick(ctx) {
 
   for (const [g, bal, dec] of [["avax", b.avax, 18], ["inj", b.inj, 18]]) {
     if (Number(bal) / 10 ** dec >= ctx.cfg.gas_floor[g]) continue;
-    // a refill still in flight (slow Axelar delivery, or an error while waiting) must not be bought a second time.
-    // Only signed refills are recorded ({at, hash}); a bare timestamp from an earlier version was set before the route
-    // check and says nothing about a signature, so it is dropped.
-    const pending = s.refillPending?.[g];
-    if (typeof pending === "number") { delete s.refillPending[g]; log(`dropping unsigned ${g.toUpperCase()} refill marker from ${new Date(pending).toISOString()}`); }
-    else if (pending && Date.now() - pending.at < 45 * 60000) { saveState(s); return log(`${g.toUpperCase()} refill ${pending.hash} from ${new Date(pending.at).toISOString()} is still in flight; waiting`), "waiting"; }
-    if ((s.refillsToday || 0) >= ctx.cfg.max_gas_refills_per_day) throw halt(`${g.toUpperCase()} gas is below its floor and today's ${ctx.cfg.max_gas_refills_per_day} refills are used up`);
-    const spend = usdc(ctx.cfg.gas_refill_usdc?.[g] ?? 1);
-    // the daily fee cap is a hard ceiling for refills too: the refill plus a bound on its Osmosis fee must fit
-    const room = usdc(ctx.cfg.max_fee_usdc_per_day) - BigInt(s.feesToday || 0);
-    if (room < spend + REFILL_FEE_BOUND) { saveState(s); return log(`${g.toUpperCase()} gas is below its floor but a ${fmtUnits(spend)} refill does not fit in today's remaining fee budget ${fmtUnits(room > 0n ? room : 0n)}; waiting for 00:00 UTC`), "capped"; }
-    try {
-      await refillGas(g, ctx, m => log(`[gas ${g}]`, m), async tx => {   // counted at signing, before broadcast, with its own tx fee
-        const total = spend + BigInt(tx.feeAllUSDC || 0);
-        // the exact fee is known here: recheck the hard cap before anything is journaled or broadcast
-        if (total > room) throw Object.assign(new Error(`${g.toUpperCase()} refill costs ${fmtUnits(total)} with its fee, over today's remaining budget ${fmtUnits(room)}`), { feeCap: true });
-        s.refillsToday = (s.refillsToday || 0) + 1; s.refillPending = { ...s.refillPending, [g]: { at: Date.now(), hash: tx.hash } };
-        addFee(s, total); saveState(s);
-      });
-    } catch (e) {
-      if (e.feeCap) { saveState(s); return log(`${e.message}; not sent, waiting for 00:00 UTC`), "capped"; }
-      if (!e.requote || DRY) throw e;
-      // a refused gas route signed nothing: ask again in 10 minutes, halt when it keeps refusing
-      // a refused gas route signed nothing: ask again every 10 minutes, and tell a person once after 6 in a row
-      const n = (s.gasRefusals?.[g] || 0) + 1; s.gasRefusals = { ...s.gasRefusals, [g]: n };
-      if (n === 6) await alert(ctx.cfg, `${g.toUpperCase()} gas route refused ${n} times in a row (still retrying every 10 min; nothing is signed). Latest: ${e.message}`);
-      s.waitUntil = Date.now() + 10 * 60000; saveState(s);
-      return log(`${e.message}; asking again in 10 minutes (refusal ${n} in a row)`), "waiting";
-    }
-    if (s.gasRefusals?.[g]) s.gasRefusals[g] = 0;
-    if (DRY) continue;   // a dry run goes on to the loop checks as if the refill had landed
-    delete s.refillPending[g]; saveState(s);
-    return "refilled";
+    const r = await buyGas(ctx, s, g);
+    if (r.status === "dry") continue;   // a dry run goes on to the loop checks as if the refill had landed
+    if (r.status !== "refilled" && r.until) { s.waitUntil = r.until; saveState(s); }
+    return r.status;
   }
 
   if ((s.loopsToday || 0) >= ctx.cfg.max_loops_per_day) { saveState(s); return log("max_loops_per_day reached"), "capped"; }

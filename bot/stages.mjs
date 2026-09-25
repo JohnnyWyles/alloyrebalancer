@@ -11,7 +11,7 @@
  */
 import { P } from "./page.mjs";
 import { signAndBroadcast, evmSend, sendRawEvm, cosmosTxState, evmTxState, rebroadcastCosmos, waitCosmosTx } from "./sign.mjs";
-import { headroom } from "./chain.mjs";
+import { headroom, readPool } from "./chain.mjs";
 
 const { K, Any, MsgSwapExactAmountIn, skipMsgToAny, skipRoute, validateNobleToHub, validateHubToInj, validateInjToAll, assertChannel,
         bankBalance, erc20BalanceOf, erc20Allowance, approvalPlan, approveCalldata, trackToCompletion, waitArrival, waitReceipt, fmtUnits, sleep } = P;
@@ -43,6 +43,14 @@ async function needRateRoom(denom, direction, channel, amount, ctx) {
     throw wait(`IBC rate limit ${h.quota}: ${fmtUnits(h.room)} of ${direction === "in" ? "inflow" : "outflow"} room left, this stage needs ${fmtUnits(need)}; waiting for the window to reset`, h.resetsAt);
 }
 
+/* every stage that swaps through pool 3497 (A1 out of it, A3 and N0 into it) re-checks its health right before signing:
+   a transmuter frozen, marked corrupted or given limiters mid-loop makes the stage wait, never sign into it */
+async function needHealthyPool() {
+  const p = await readPool();
+  const why = !p.active ? "inactive (frozen)" : p.corrupted.length ? `holding corrupted denoms ${p.corrupted.join(", ")}` : p.limiters.length ? `carrying ${p.limiters.length} limiter(s)` : null;
+  if (why) throw wait(`pool ${K.POOL} is ${why}; this stage waits until it is healthy`, Date.now() + 10 * 60000);
+}
+
 /* cosmos stages share the "how did the recorded tx end" logic; the EVM stage has its own */
 const cosmosTx = chain => ({
   async state(tx) { return (await cosmosTxState(chain, tx.hash, tx.timeoutHeight)).state; },
@@ -57,6 +65,7 @@ export const STAGES = {
       const amountIn = st.amountIn;
       // after a refunded IBC hop (refunded() below) the USDC.noble is already on Osmosis: send it again without swapping more
       const resend = st.refunds > 0 && await osmoNoble(ctx) >= BigInt(amountIn);
+      await needHealthyPool();
       if (!resend && await osmoAll(ctx) < BigInt(amountIn)) throw halt(`allUSDC balance is below the ${fmtUnits(amountIn)} this loop was started with`);
       await assertChannel("osmosis-1", K.OSMO_TO_NOBLE, "noble-1");
       await needRateRoom(K.NOBLE, "out", K.OSMO_TO_NOBLE, amountIn, ctx);
@@ -95,6 +104,7 @@ export const STAGES = {
     ...cosmosTx("osmosis-1"),
     async send(ctx, st, note, onSigned) {
       const amountIn = st.amountIn, bal = await osmoNoble(ctx);
+      await needHealthyPool();
       if (bal < BigInt(amountIn)) throw halt(`USDC.noble balance ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this recovery expects`);
       Object.assign(st, { before: (await osmoAll(ctx)).toString(), expected: amountIn });
       note(`swap ${fmtUnits(amountIn)} USDC.noble -> allUSDC on pool ${K.POOL}, minimum out ${fmtUnits(amountIn)}`);
@@ -149,6 +159,7 @@ export const STAGES = {
       const bal = await injUsdc(ctx);
       if (bal < BigInt(amountIn)) throw halt(`Injective USDC.inj balance ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this stage expects`);
       await assertChannel("injective-1", K.INJ_TO_OSMO, "osmosis-1");
+      await needHealthyPool();
       await needRateRoom(K.INJ_IBC, "in", K.OSMO_TO_INJ, amountIn, ctx);
       const before = await osmoAll(ctx);
       const res = await skipRoute(K.INJ_ERC20, "injective-1", K.ALL, "osmosis-1", amountIn, { "injective-1": ctx.W.inj, "osmosis-1": ctx.W.osmo });
@@ -184,7 +195,7 @@ export const ORDER = ["A1", "A2", "A3"];
 export function tightenMinAsset(res, amountIn) {
   const m = res.txs[0].cosmos_tx.msgs[0], j = JSON.parse(m.msg), memo = JSON.parse(j.memo);
   const ma = memo?.wasm?.msg?.swap_and_action?.min_asset?.native;
-  if (!ma || ma.denom !== K.ALL) throw halt("hook memo has no allUSDC min_asset to tighten");
+  if (!ma || ma.denom !== K.ALL) throw requote("route refused: hook memo has no allUSDC min_asset to tighten");
   if (BigInt(ma.amount) < BigInt(amountIn)) ma.amount = String(amountIn);
   j.memo = JSON.stringify(memo); m.msg = JSON.stringify(j);
 }

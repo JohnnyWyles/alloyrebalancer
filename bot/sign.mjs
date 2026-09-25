@@ -85,7 +85,7 @@ export async function signAndBroadcast(chainId, wallet, anys, note, onSigned, op
   const fee = chainId === "osmosis-1" ? await osmoFeeInAllUSDC(gas, opts.osmoFeeMargin || 1.5) : String(Math.ceil(gas * await gasPriceOf(chainId)));
   if (chainId !== "osmosis-1") {   // Osmosis fees come out of the allUSDC reserve; INJ is only refilled between loops
     const bal = await P.bankBalance(chainId, k.addr, feeDenom);
-    if (bal < BigInt(fee)) throw Object.assign(new Error(`${C.feeSym} balance ${P.fmtUnits(bal, C.feeDec)} cannot pay this tx's fee ${P.fmtUnits(fee, C.feeDec)}. Send ${C.feeSym} to ${k.addr}, then delete HALTED; the stage resumes where it is.`), { halt: true, nothingSent: true });
+    if (bal < BigInt(fee)) throw Object.assign(new Error(`${C.feeSym} balance ${P.fmtUnits(bal, C.feeDec)} cannot pay this tx's fee ${P.fmtUnits(fee, C.feeDec)}. Send ${C.feeSym} to ${k.addr}, then delete HALTED; the stage resumes where it is.`), { halt: true, nothingSent: true, gasShort: chainId === "injective-1" ? "inj" : null });
   }
   const authInfo = AuthInfo([SignerInfo(pkAny, 1, acc.sequence)], Fee([{ denom: feeDenom, amount: fee }], String(gas)));
   const raw = TxRaw(body, authInfo, [signCosmosBytes(k, SignDoc(body, authInfo, chainId, acc.accountNumber))]);
@@ -178,7 +178,7 @@ export async function evmSend(chainId, wallet, { to, data, value }, note, onSign
   const gas = BigInt(await rpc(chainId, "eth_estimateGas", [call])) * 13n / 10n;
   // gas is only refilled between loops; running short mid-loop must stop loudly here, not spin on node refusals
   const have = BigInt(await rpc(chainId, "eth_getBalance", [k.addr, "latest"])), worst = gas * maxFee + BigInt(value || 0);
-  if (have < worst) throw Object.assign(new Error(`${K.EVM[chainId]?.sym || chainId} balance ${Number(have) / 1e18} cannot cover this tx's worst-case ${Number(worst) / 1e18} (gas ${gas} at ${Number(maxFee) / 1e9} gwei). Send ${K.EVM[chainId]?.sym || "gas"} to ${k.addr}, then delete HALTED; the stage resumes where it is.`), { halt: true, nothingSent: true });
+  if (have < worst) throw Object.assign(new Error(`${K.EVM[chainId]?.sym || chainId} balance ${Number(have) / 1e18} cannot cover this tx's worst-case ${Number(worst) / 1e18} (gas ${gas} at ${Number(maxFee) / 1e9} gwei). Send ${K.EVM[chainId]?.sym || "gas"} to ${k.addr}, then delete HALTED; the stage resumes where it is.`), { halt: true, nothingSent: true, gasShort: chainId === "43114" ? "avax" : null });
   const { raw, hash } = signEip1559(k.priv, { chainId: BigInt(chainId), nonce, maxPriorityFeePerGas: prio, maxFeePerGas: maxFee, gas, to, value: value || 0, data });
   if (opts.dryRun) { note(`dry run: would send ${hash} to ${to} (gas ${gas})`); return { hash, dryRun: true }; }
   await onSigned({ hash, raw, nonce: nonce.toString(), chain: chainId });

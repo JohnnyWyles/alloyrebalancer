@@ -86,15 +86,20 @@ in dollars and less per dollar moved.
   a single 1:1 USDC.noble -> allUSDC swap on pool 3497. A refunded IBC hop in A1 is resent from the refunded
   USDC.noble without swapping more. Recovery uses the same validators, journal and fee rules as a loop, runs even
   when the pool is at target, and does not count as a loop. `auto_recover: false` halts instead.
-- **It halts rather than guessing.** A loop loss above `max_loop_loss_bps`, an arrival that does not come and is not
-  a proven refund, gas too low to pay for the next step, or a lost journal each
-  write a `HALTED` file and stop the bot until a person deletes it. A halted loop keeps its journal and resumes from
-  the stage it was on.
+- **Waits instead of halting when time fixes it.** A transfer that has not arrived after its 30-minute window keeps
+  being waited for (waiting never re-signs anything), with an alert when it first goes late and every 3 hours after.
+  A stage that cannot pay its AVAX or INJ gas mid-loop buys more from the Osmosis allUSDC reserve and carries on.
+  Using up `max_gas_refills_per_day` waits for 00:00 UTC with one alert.
+- **Halts only for what needs a person.** A loop that lost more than Skip quoted by over `max_loop_loss_bps` of its
+  amount, a stage signed three times without success, a balance missing at the start of a stage, a state file for a
+  different wallet, or a lost journal each write a `HALTED` file and stop the bot until a person deletes it. A halted
+  loop keeps its journal and resumes from the stage it was on.
 - **Refused quotes are asked again, indefinitely.** Skip occasionally answers with a detour (a three-hop swap instead
   of pool 3497), and during an Avalanche gas spike the Noble relay fee it quotes can exceed the page's bound; both clear
   by themselves. Nothing is signed for a refused route, so the bot asks again after 30 s, 1, 2, 4 and 8 minutes and
   then every 15 minutes, and sends one alert after six refusals in a row. What is accepted does not change.
-- **Hard daily fee ceiling.** A loop starts only if its worst-case loss (`max_loop_loss_bps` of its amount) and its
+- **Hard daily fee ceiling.** A loop starts only if its worst-case loss (the validated quote bounds plus
+  `max_loop_loss_bps` of its amount) and its
   fee fit in `max_fee_usdc_per_day`, and every Osmosis transaction rechecks its exact fee before broadcast.
 - **One signer.** A lock file stops two instances from running against the same state.
 
@@ -246,12 +251,12 @@ loop without a restart.
 
 Halts you might see:
 
-- **... balance cannot cover this tx**: AVAX or INJ ran out in the middle of a loop. Send some to the address in the
-  message and delete `HALTED`; the stage resumes where it was.
+- **... lost X allUSDC, Y more than Skip quoted**: a loop came back short by more than its quotes explain. Compare the
+  stage amounts in `/var/lib/alloybot/state.json` history and the transactions before deleting `HALTED`.
+- **... was signed 3 times without success**: three attempts at one stage each failed without moving funds, which
+  points at something systematic (fees, account state). The reasons are in `journalctl`.
 - **... with no loop in flight, and auto_recover is off**: funds are outside the alloy and automatic recovery is
   disabled. Turn it on, or import the mnemonic into Keplr and use the page's stranded-funds offer.
-- **rose by only ...**: a bridge leg did not deliver in time. Look up the recorded transaction in
-  `/var/lib/alloybot/state.json`; when the funds land, deleting `HALTED` resumes the loop from that stage.
 - **state.json is missing but JOURNAL_INITIALIZED says ...**: the journal was lost (deleted, or the disk restored from
   an older snapshot). It may have been tracking a loop in flight, so the bot will not start a fresh one. Restore
   `state.json`, or check onchain that no funds are outside the alloy (`alloybotctl status` still works: no USDC on
@@ -271,7 +276,8 @@ Then set in `config.json`:
 "telegram": { "token_file": "/var/lib/alloybot/telegram.token", "chat_id": "<your chat id>" }
 ```
 
-Halts, recoveries, six refused quotes in a row, and runs of repeated errors are sent there.
+Halts, recoveries, late arrivals, six refused quotes in a row, a used-up refill budget, and runs of repeated errors
+are sent there.
 
 ## Config reference
 
@@ -283,10 +289,10 @@ Halts, recoveries, six refused quotes in a row, and runs of repeated errors are 
 | `min_loop_usdc` | 10 | no loop below this, for either the idle balance or the remaining shortfall |
 | `reserve_usdc` | 3 | allUSDC kept back; Osmosis fees are about 0.0017 per loop |
 | `max_loops_per_day` | 100 | per UTC day |
-| `max_loop_loss_bps` | 10 | allUSDC back vs out per loop; a larger loss halts |
+| `max_loop_loss_bps` | 10 | loss allowed beyond what Skip quoted for the loop, as bps of its amount; more halts. Expensive but quoted loops (a gas spike) do not halt |
 | `max_fee_usdc_per_day` | 5 | per UTC day: loop losses, Osmosis fees, gas refills. A loop or refill that would not fit (with its worst-case loss) waits for 00:00 UTC |
 | `gas_floor` | avax 0.02, inj 0.001 | refill below these, between loops. 0.02 AVAX covers one loop at the fee cap |
-| `max_gas_refills_per_day` | 4 | needing more halts |
+| `max_gas_refills_per_day` | 4 | needing more waits for 00:00 UTC, with one alert |
 | `gas_refill_usdc` | avax 2, inj 1 | allUSDC per refill (at most 10) |
 | `gas_min_value_pct` | 80 | a refill must deliver at least this % of its cost in gas, otherwise it waits |
 | `avax_max_fee_gwei` | 50 | above this the A2 send waits instead of paying |

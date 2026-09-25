@@ -12,7 +12,7 @@ import { P } from "./page.mjs";
 import { deriveWallet, SignDoc, signCosmosBytes, signEip1559, rlp, sendRawEvm } from "./sign.mjs";
 import { deficit, sharePct, quotaRoom, gasSpec } from "./chain.mjs";
 import { tightenMinAsset } from "./stages.mjs";
-import { makeRunner, MAX_SIGNED_ATTEMPTS, ALERT_REQUOTES, fitsFeeCap, loopLossBound, nextUtcMidnight, planRecovery } from "./cycle.mjs";
+import { makeRunner, MAX_SIGNED_ATTEMPTS, ALERT_REQUOTES, fitsFeeCap, loopLossBound, cycleLossBound, nextUtcMidnight, planRecovery } from "./cycle.mjs";
 
 const FIX = p => JSON.parse(fs.readFileSync(new URL("../test-fixtures/" + p, import.meta.url), "utf8"));
 let pass = 0, fail = 0;
@@ -146,6 +146,7 @@ function harness(behaviour, cfg = {}) {
       const fee = behaviour[key]?.fee || "0";
       if (b instanceof Error) { if (b.afterSign) await onSigned({ hash: "H" + calls.length, feeAllUSDC: fee }); throw b; }
       await onSigned({ hash: "H" + calls.length, feeAllUSDC: fee });
+      if (behaviour[key]?.quote) st.expected = behaviour[key].quote;
       return { hash: "H" };
     },
     async arrive(ctx, st) {
@@ -157,7 +158,7 @@ function harness(behaviour, cfg = {}) {
     async refunded() { calls.push(`${key}:refunded`); return behaviour[key]?.refunded?.shift?.() ?? false; },
   });
   const STAGES = { A1: mk("A1"), A2: mk("A2"), A3: mk("A3"), N0: mk("N0") };
-  const run = makeRunner({ STAGES, ORDER: ["A1", "A2", "A3"], saveState: s => saved.push(JSON.parse(JSON.stringify(s))), log: () => {}, notify: cfg.notify, addFee: (s, a) => { s.fees = (BigInt(s.fees || 0) + BigInt(a)).toString(); }, retryMs: 0, refundRetryMs: 0, requoteMs: 0 });
+  const run = makeRunner({ STAGES, ORDER: ["A1", "A2", "A3"], saveState: s => saved.push(JSON.parse(JSON.stringify(s))), log: () => {}, notify: cfg.notify, refillGas: cfg.refillGas, addFee: (s, a) => { s.fees = (BigInt(s.fees || 0) + BigInt(a)).toString(); }, retryMs: 0, refundRetryMs: 0, requoteMs: 0 });
   const ctx = { cfg: { max_loop_loss_bps: 10, ...cfg }, capMicro: cfg.capMicro ?? 5000000n };
   return { calls, saved, go: s => run(ctx, s) };
 }
@@ -186,9 +187,13 @@ const fresh = (amt = "100000000") => ({ cycle: { id: "t", amountIn: amt, idx: 0,
   ok(h.calls.slice(0, 3).join() === "A1:state,A1:rebroadcast,A1:arrive", "a pending/unknown tx is rebroadcast as the same bytes, not re-signed");
 }
 {
-  const h = harness({ A2: { arrive: [new Error("Injective USDC.inj rose by only 0")] } }), s = fresh();
-  await rejects(h.go(s), /A2 .*rose by only/, "arrival failure without a refund halts");
-  ok(s.cycle && s.cycle.stages.A2.tx && s.cycle.idx === 1, "halted loop keeps its journal (resumable after the human looks)");
+  const alerts = [];
+  const h = harness({ A2: { arrive: [new Error("Injective USDC.inj rose by only 0"), new Error("Injective USDC.inj rose by only 0")] } }, { notify: (c, t) => alerts.push(t) }), s = fresh();
+  try { await h.go(s); ok(false, "late arrival propagates"); } catch (e) { ok(e.wait && !e.halt && /arrival late/.test(e.message), "a late arrival without a refund waits instead of halting"); }
+  ok(s.cycle.stages.A2.tx && s.cycle.idx === 1 && alerts.length === 1 && /A2 is late/.test(alerts[0]), "keeps the journaled tx and alerts once");
+  await h.go(s).catch(() => {});
+  ok(alerts.length === 1 && h.calls.filter(c => c === "A2:send").length === 1, "still late on the next tick: no second alert within 3 h, never re-signed");
+  ok(await h.go(s) === "done", "and when it lands the loop completes");
 }
 {
   const h = harness({ A3: { arrive: [new Error("Skip reports STATE_COMPLETED_ERROR")], refunded: [true] } }), s = fresh();
@@ -208,7 +213,7 @@ const fresh = (amt = "100000000") => ({ cycle: { id: "t", amountIn: amt, idx: 0,
 }
 {
   const h = harness({ A3: { arrive: ["99000000"] } }), s = fresh();
-  await rejects(h.go(s), /above max_loop_loss_bps/, "a 1% loss halts at 10 bps");
+  await rejects(h.go(s), /more than Skip quoted/, "a 1% loss nobody quoted halts at 10 bps");
   ok(s.cycle === null, "after the funds are home (cycle cleared)");
 }
 {
@@ -236,11 +241,24 @@ const fresh = (amt = "100000000") => ({ cycle: { id: "t", amountIn: amt, idx: 0,
   ok(BigInt(s.fees) === 1664n, "and does not book the fee twice (loop loss is 0 here)");
 }
 {
-  ok(loopLossBound("100000000", 10) === 100000n, "worst-case loss of a 100 USDC loop at 10 bps is 0.1");
-  ok(fitsFeeCap({ capMicro: 5000000n, bookedMicro: "4850000", amountIn: "100000000", bps: 10, feeMicro: 1664n }), "fee + worst-case loss that fit are allowed");
+  ok(loopLossBound("100000000", 10) === 200000n, "worst case for a 100 USDC loop at 10 bps: 0.05 A1 relay bound + 0.05 A2 (5 bps) + 0.10 margin");
+  ok(loopLossBound("10000000000", 1) === 11000000n, "10,000 USDC at 1 bps: 5 + 5 (5 bps legs) + 1 margin");
+  ok(fitsFeeCap({ capMicro: 5000000n, bookedMicro: "4750000", amountIn: "100000000", bps: 10, feeMicro: 1664n }), "fee + worst-case loss that fit are allowed");
   ok(!fitsFeeCap({ capMicro: 5000000n, bookedMicro: "4990000", amountIn: "100000000", bps: 10, feeMicro: 1664n }), "a loop with 0.01 of budget left is refused");
   ok(!fitsFeeCap({ capMicro: 5000000n, bookedMicro: "4899000", amountIn: "100000000", bps: 10, feeMicro: 1664n }), "the exact fee tips it over: refused");
   const m = nextUtcMidnight(Date.UTC(2026, 8, 24, 15, 4)); ok(m === Date.UTC(2026, 8, 25), "next UTC midnight");
+  // recoveries run only the tail of the loop, so they reserve only what those stages can lose
+  const O = ["A1", "A2", "A3"], z = { noble: 0n, avaxUsdc: 0n, injUsdc: 0n };
+  const ri = planRecovery({ ...z, injUsdc: 100000000n }, 1000000n, O), ra = planRecovery({ ...z, avaxUsdc: 100000000n }, 1000000n, O), rn = planRecovery({ ...z, noble: 100000000n }, 1000000n, O);
+  ok(cycleLossBound(ri, ri.order, 5) === 50000n, "Injective recovery (A3 only, exact 1:1): just the 5 bps margin, 0.05");
+  ok(cycleLossBound(ra, ra.order, 5) === 100000n, "Avalanche recovery (A2 + A3): 5 bps A2 quote bound + margin, 0.10");
+  ok(cycleLossBound(rn, rn.order, 5) === 50000n, "USDC.noble recovery (N0, exact 1:1): just the margin");
+  ok(cycleLossBound({ amountIn: "100000000" }, O, 5) === loopLossBound("100000000", 5), "a full loop reserves the full-loop bound");
+  // the reviewer's case: 4.99 booked, a 100 USDC Avalanche recovery may lose 0.10: does not fit a 5 cap
+  ok(!fitsFeeCap({ capMicro: 5000000n, bookedMicro: "4990000", feeMicro: 0n, lossMicro: cycleLossBound(ra, ra.order, 5) }), "a recovery whose worst case does not fit the day is refused");
+  // a refill mid-loop must leave the in-flight cycle's reservation intact: 2.9 booked + 2.05 refill + 0.2 reserved > 5
+  const inFlight = loopLossBound("100000000", 10);
+  ok(5000000n - 2900000n - inFlight < 2000000n + 50000n, "a 2 USDC refill with 2.9 booked and a 100 USDC loop in flight does not fit a 5 cap");
 }
 {
   // 4.99 already booked today: A1's exact fee plus the loop's 0.1 worst-case loss does not fit a 5 cap
@@ -291,6 +309,23 @@ const fresh = (amt = "100000000") => ({ cycle: { id: "t", amountIn: amt, idx: 0,
   // A1's IBC hop refunded: the stage is retried (resending the refunded USDC.noble), not halted
   const h = harness({ A1: { arrive: [new Error("Avalanche USDC rose by only 0; expected 99.99")], refunded: [true] } }), s = fresh();
   ok(await h.go(s) === "done" && h.calls.filter(c => c === "A1:send").length === 2 && s.cycle === null, "a refunded A1 is retried after proof and the loop completes");
+}
+{
+  // an expensive but quoted loop (gas spike: A1 quoted 0.05 relay) does not halt at 5 bps; the same loss unquoted would
+  const h = harness({ A1: { quote: "99950000", arrive: ["99950000"] }, A3: { arrive: ["99950000"] } }, { max_loop_loss_bps: 5 }), s = fresh();
+  ok(await h.go(s) === "done" && s.history.at(-1).back === "99950000", "a 0.05 loss that Skip quoted completes at 5 bps");
+  const h2 = harness({ A1: { quote: "99990000", arrive: ["99990000"] }, A3: { arrive: ["99900000"] } }, { max_loop_loss_bps: 5 }), s2 = fresh();
+  await rejects(h2.go(s2), /more than Skip quoted/, "0.1 lost against a 0.01 quote: 0.09 unexplained, over 0.05, halts");
+}
+{
+  // AVAX runs out at A2: refilled from the Osmosis reserve, then A2 is signed; no halt
+  const short = Object.assign(new Error("AVAX balance cannot cover"), { halt: true, nothingSent: true, gasShort: "avax" });
+  const refills = [];
+  const h = harness({ A2: { send: [short] } }, { refillGas: async (c, st, g) => { refills.push(g); } }), s = fresh();
+  ok(await h.go(s) === "done" && refills.join() === "avax", "a mid-loop gas shortfall refills once and the loop completes");
+  ok(h.calls.filter(c => c === "A2:send").length === 2 && s.cycle === null, "A2 tried again after the refill");
+  const h2 = harness({ A2: { send: [short] } }), s3 = fresh();
+  await rejects(h2.go(s3), /cannot cover/, "without a refill hook it still halts before signing");
 }
 {
   const rq = () => Object.assign(new Error("route refused: route: expected exactly one swap hop, got 3"), { requote: true });
