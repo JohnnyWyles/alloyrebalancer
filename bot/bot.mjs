@@ -133,7 +133,7 @@ function loadWallet() {
   return deriveWallet(fs.readFileSync(file, "utf8"));
 }
 
-const runCycle = makeRunner({ STAGES, ORDER, saveState, log, addFee });
+const runCycle = makeRunner({ STAGES, ORDER, saveState, log, addFee, notify: (ctx, text) => alert(ctx.cfg, text) });
 
 /* ---------------- one decision ---------------- */
 async function tick(ctx) {
@@ -198,10 +198,11 @@ async function tick(ctx) {
       if (e.feeCap) { saveState(s); return log(`${e.message}; not sent, waiting for 00:00 UTC`), "capped"; }
       if (!e.requote || DRY) throw e;
       // a refused gas route signed nothing: ask again in 10 minutes, halt when it keeps refusing
+      // a refused gas route signed nothing: ask again every 10 minutes, and tell a person once after 6 in a row
       const n = (s.gasRefusals?.[g] || 0) + 1; s.gasRefusals = { ...s.gasRefusals, [g]: n };
-      if (n >= 6) { s.gasRefusals[g] = 0; saveState(s); throw halt(`${g.toUpperCase()} gas route refused ${n} times in a row, latest: ${e.message}`); }
+      if (n === 6) await alert(ctx.cfg, `${g.toUpperCase()} gas route refused ${n} times in a row (still retrying every 10 min; nothing is signed). Latest: ${e.message}`);
       s.waitUntil = Date.now() + 10 * 60000; saveState(s);
-      return log(`${e.message}; asking again in 10 minutes (${n}/6)`), "waiting";
+      return log(`${e.message}; asking again in 10 minutes (refusal ${n} in a row)`), "waiting";
     }
     if (s.gasRefusals?.[g]) s.gasRefusals[g] = 0;
     if (DRY) continue;   // a dry run goes on to the loop checks as if the refill had landed

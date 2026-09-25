@@ -86,13 +86,14 @@ in dollars and less per dollar moved.
   a single 1:1 USDC.noble -> allUSDC swap on pool 3497. A refunded IBC hop in A1 is resent from the refunded
   USDC.noble without swapping more. Recovery uses the same validators, journal and fee rules as a loop, runs even
   when the pool is at target, and does not count as a loop. `auto_recover: false` halts instead.
-- **It halts rather than guessing.** A route refused six times in a row, a loop loss above `max_loop_loss_bps`, an
-  arrival that does not come and is not a proven refund, gas too low to pay for the next step, or a lost journal each
+- **It halts rather than guessing.** A loop loss above `max_loop_loss_bps`, an arrival that does not come and is not
+  a proven refund, gas too low to pay for the next step, or a lost journal each
   write a `HALTED` file and stop the bot until a person deletes it. A halted loop keeps its journal and resumes from
   the stage it was on.
-- **Refused quotes are asked again.** Skip occasionally answers with a detour (a three-hop swap instead of pool 3497)
-  that it no longer offers a minute later. Nothing is signed for a refused route, so the bot asks again after 30 s, 1,
-  2, 4 and 8 minutes before halting. What is accepted does not change.
+- **Refused quotes are asked again, indefinitely.** Skip occasionally answers with a detour (a three-hop swap instead
+  of pool 3497), and during an Avalanche gas spike the Noble relay fee it quotes can exceed the page's bound; both clear
+  by themselves. Nothing is signed for a refused route, so the bot asks again after 30 s, 1, 2, 4 and 8 minutes and
+  then every 15 minutes, and sends one alert after six refusals in a row. What is accepted does not change.
 - **Hard daily fee ceiling.** A loop starts only if its worst-case loss (`max_loop_loss_bps` of its amount) and its
   fee fit in `max_fee_usdc_per_day`, and every Osmosis transaction rechecks its exact fee before broadcast.
 - **One signer.** A lock file stops two instances from running against the same state.
@@ -245,8 +246,6 @@ loop without a restart.
 
 Halts you might see:
 
-- **N refused quotes in a row**: Skip has offered only routes the validator refuses for about 15 minutes, which usually
-  means an adapter, recipient or route shape changed. Check the page and its tests before deleting `HALTED`.
 - **... balance cannot cover this tx**: AVAX or INJ ran out in the middle of a loop. Send some to the address in the
   message and delete `HALTED`; the stage resumes where it was.
 - **... with no loop in flight, and auto_recover is off**: funds are outside the alloy and automatic recovery is
@@ -272,7 +271,7 @@ Then set in `config.json`:
 "telegram": { "token_file": "/var/lib/alloybot/telegram.token", "chat_id": "<your chat id>" }
 ```
 
-Halts and repeated errors are sent there.
+Halts, recoveries, six refused quotes in a row, and runs of repeated errors are sent there.
 
 ## Config reference
 

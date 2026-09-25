@@ -10,7 +10,11 @@ const { fmtUnits } = P;
 const halt = msg => Object.assign(new Error(msg), { halt: true });
 export const MAX_SIGNED_ATTEMPTS = 3;
 const ARRIVAL_FAILED = /rose by only|^Skip reports/;   // page's waitArrival timeout, trackToCompletion's terminal error
-export const MAX_REQUOTES = 6;   // consecutive refused quotes per stage before halting: 30 s, 1, 2, 4, 8 min apart (~15 min)
+/* Refused quotes sign nothing, so they are asked again indefinitely: 30 s, 1, 2, 4, 8, then every 15 minutes. After
+   ALERT_REQUOTES in a row a person is told once (the usual cause is a gas spike pushing a relay fee past the page's
+   bound, which clears by itself; a persistent one means Skip changed an adapter or route shape). */
+export const ALERT_REQUOTES = 6;
+export const MAX_REQUOTE_DELAY_MS = 15 * 60000;
 
 /* The daily fee ceiling, for loops. A loop may still lose up to max_loop_loss_bps of its amount (booked when it
    completes), so any allUSDC fee signed for it must fit together with that worst-case loss. A loss beyond the bound
@@ -34,7 +38,7 @@ export function planRecovery(b, strandMicro, ORDER, now = Date.now()) {
   return null;
 }
 
-export function makeRunner({ STAGES, ORDER, saveState, log, addFee, retryMs = 120000, refundRetryMs = 300000, requoteMs = 30000 }) {
+export function makeRunner({ STAGES, ORDER, saveState, log, addFee, notify = async () => {}, retryMs = 120000, refundRetryMs = 300000, requoteMs = 30000 }) {
  return async function runCycle(ctx, s) {
   const c = s.cycle, order = c.order || ORDER;   // a recovery cycle carries its own (partial) stage order
   for (; c.idx < order.length; c.idx++) {
@@ -64,9 +68,9 @@ export function makeRunner({ STAGES, ORDER, saveState, log, addFee, retryMs = 12
           }
           if (e.requote && !st.tx) {   // nothing was signed: ask again later, halt only if it keeps refusing
             st.requotes = (st.requotes || 0) + 1;
-            if (st.requotes >= MAX_REQUOTES) throw halt(`${key}: ${st.requotes} refused quotes in a row, latest: ${e.message}`);
-            const delay = requoteMs * 2 ** (st.requotes - 1);
-            note(`${e.message}; asking Skip again in ${Math.round(delay / 1000)} s (${st.requotes}/${MAX_REQUOTES})`);
+            if (st.requotes === ALERT_REQUOTES) await notify(ctx, `${key}: ${st.requotes} refused quotes in a row (still retrying every ${MAX_REQUOTE_DELAY_MS / 60000} min; nothing is signed). Latest: ${e.message}`);
+            const delay = Math.min(requoteMs * 2 ** (st.requotes - 1), MAX_REQUOTE_DELAY_MS);
+            note(`${e.message}; asking Skip again in ${Math.round(delay / 1000)} s (refusal ${st.requotes} in a row)`);
             st.retryAfter = Date.now() + delay; save(); continue;
           }
           if (e.rejectedHash || e.txFailed || e.txExpired) {   // provably never moved funds: forget the tx and retry after a pause
