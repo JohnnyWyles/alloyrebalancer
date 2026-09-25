@@ -297,7 +297,7 @@ are sent there.
 | `gas_min_value_pct` | 80 | a refill must deliver at least this % of its cost in gas, otherwise it waits |
 | `avax_max_fee_gwei` | 50 | above this the A2 send waits instead of paying |
 | `osmo_fee_margin` | 2 | Osmosis fee over the base fee, converted at the fee pool's spot price |
-| `rate_limit_margin_pct` | 1 | headroom kept below the IBC rate limits |
+| `rate_limit_margin_pct` | 1 | % of each IBC rate-limit quota cap left free for other users; the bot only uses the rest |
 | `stranded_threshold_usdc` | 1 | funds outside the alloy above this, with no loop in flight, are recovered |
 | `auto_recover` | true | recover such funds automatically; false halts instead |
 | `telegram` | null | optional alerts, see above |

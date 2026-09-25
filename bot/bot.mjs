@@ -44,7 +44,7 @@ const DEFAULTS = {
   gas_min_value_pct: 80,     // a refill quote must deliver at least this % of its allUSDC in gas
   avax_max_fee_gwei: 50,
   osmo_fee_margin: 2,       // Osmosis fee (in allUSDC) over the base fee at the fee pool's spot price
-  rate_limit_margin_pct: 1,
+  rate_limit_margin_pct: 1,  // % of each rate-limit quota cap left free for other users
   stranded_threshold_usdc: 1,
   auto_recover: true,        // bring funds found outside the alloy home by the loop's own stages; false halts instead
   telegram: null,            // { "token_file": "/etc/alloybot/telegram.token", "chat_id": "123" }
@@ -246,8 +246,8 @@ async function tick(ctx) {
   }
 
   for (const [denom, dir, ch, label] of [[K.NOBLE, "out", K.OSMO_TO_NOBLE, "USDC.noble outflow"], [K.INJ_IBC, "in", K.OSMO_TO_INJ, "USDC.inj inflow"]]) {
-    const h = await headroom(denom, dir, ch);
-    if (h.room !== null && h.room < amount * BigInt(10000 + Math.round(ctx.cfg.rate_limit_margin_pct * 100)) / 10000n) {
+    const h = await headroom(denom, dir, ch, ctx.cfg.rate_limit_margin_pct);
+    if (h.room !== null && h.room < amount) {
       s.waitUntil = h.resetsAt || Date.now() + 3600000; saveState(s);
       return log(`${label} rate limit ${h.quota} has ${fmtUnits(h.room)} room; waiting until ${new Date(s.waitUntil).toISOString()}`), "rate-limited";
     }

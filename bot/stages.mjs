@@ -37,8 +37,8 @@ const osmoAll = ctx => bankBalance("osmosis-1", ctx.W.osmo, K.ALL);
 const osmoNoble = ctx => bankBalance("osmosis-1", ctx.W.osmo, K.NOBLE);
 
 async function needRateRoom(denom, direction, channel, amount, ctx) {
-  const h = await headroom(denom, direction, channel);
-  const need = BigInt(amount) * BigInt(10000 + Math.round(ctx.cfg.rate_limit_margin_pct * 100)) / 10000n;
+  const h = await headroom(denom, direction, channel, ctx.cfg.rate_limit_margin_pct);
+  const need = BigInt(amount);
   if (h.room !== null && h.room < need)
     throw wait(`IBC rate limit ${h.quota}: ${fmtUnits(h.room)} of ${direction === "in" ? "inflow" : "outflow"} room left, this stage needs ${fmtUnits(need)}; waiting for the window to reset`, h.resetsAt);
 }

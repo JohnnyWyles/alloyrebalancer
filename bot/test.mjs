@@ -104,6 +104,10 @@ ok(bad, "invalid mnemonic refused");
   ok(threw, "an expired window without a current supply is refused, never guessed");
   ok(quotaRoom(q("300000", "100000", later), "in", now, 1n).room === 800000n, "a live window ignores the supply and uses its own snapshot");
   ok(quotaRoom(q("1", "0", later), "in", now).resetsAt === Number(BigInt(later) / 1000000n), "resetsAt is the window end in ms");
+  ok(quotaRoom(q("300000", "100000", later), "in", now, undefined, 8).room === 720000n, "reserve keeps 8% of the cap free: 920,000 usable minus 200,000 net inflow");
+  ok(quotaRoom(q("100000", "300000", later), "in", now, undefined, 8).room === 920000n, "net outflow leaves the reserved cap, not the full cap");
+  ok(quotaRoom(q("0", "240000", later), "out", now, undefined, 8).room === 0n, "net flow inside the reserve leaves no room");
+  ok(quotaRoom(q("999999", "0", past), "in", now, 600000n, 8).room === 552000n, "an expired window's reset size is reserved too");
 }
 
 /* ---------- gas refill sizing ---------- */

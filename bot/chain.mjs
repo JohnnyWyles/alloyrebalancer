@@ -46,20 +46,22 @@ async function quotasFor(channel, denom) {
 /* An expired window restarts on the next transfer and re-snapshots channel_value from the denom's supply at that moment
    (rate_limit.rs allow_transfer -> calculate_channel_value; for an IBC denom inbound, the supply itself; outbound, supply
    plus the amount sent, so supply is the conservative figure). The cached channel_value of an expired window is stale
-   and can be far above the value it will reset to, so expired windows are sized from resetValue (the current supply). */
-export function quotaRoom(q, direction, nowNs, resetValue) {
+   and can be far above the value it will reset to, so expired windows are sized from resetValue (the current supply).
+   reservePct of each cap is left for other users: the bot's room is what remains below cap * (1 - reservePct/100). */
+export function quotaRoom(q, direction, nowNs, resetValue, reservePct = 0) {
   const pct = BigInt(direction === "in" ? q.quota.max_percentage_recv : q.quota.max_percentage_send);
+  const keepBps = BigInt(10000 - Math.round(reservePct * 100));
   if (BigInt(q.flow.period_end) < nowNs) {
     if (resetValue === undefined) throw new Error(`quota ${q.quota.name} has expired and no current supply was given to size its reset`);
-    return { room: BigInt(resetValue) * pct / 100n, resetsAt: null };
+    return { room: BigInt(resetValue) * pct / 100n * keepBps / 10000n, resetsAt: null };
   }
-  const cap = BigInt(q.quota.channel_value || 0) * pct / 100n;
+  const cap = BigInt(q.quota.channel_value || 0) * pct / 100n * keepBps / 10000n;
   const inflow = BigInt(q.flow.inflow), outflow = BigInt(q.flow.outflow);
   const used = direction === "in" ? (inflow > outflow ? inflow - outflow : 0n) : (outflow > inflow ? outflow - inflow : 0n);
   return { room: cap > used ? cap - used : 0n, resetsAt: Number(BigInt(q.flow.period_end) / 1000000n) };
 }
 /* smallest headroom over every quota on (any, denom) and (channel, denom); room null when the denom has no quota */
-export async function headroom(denom, direction, channel) {
+export async function headroom(denom, direction, channel, reservePct = 0) {
   const qs = [...await quotasFor("any", denom), ...await quotasFor(channel, denom)];
   const nowNs = BigInt(Date.now()) * 1000000n;
   let supply;
@@ -70,7 +72,7 @@ export async function headroom(denom, direction, channel) {
   }
   let best = { room: null, resetsAt: null, quota: null };
   for (const q of qs) {
-    const r = quotaRoom(q, direction, nowNs, supply);
+    const r = quotaRoom(q, direction, nowNs, supply, reservePct);
     if (best.room === null || r.room < best.room) best = { ...r, quota: q.quota.name };
   }
   return best;
