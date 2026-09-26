@@ -17,7 +17,7 @@ import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { P } from "./page.mjs";
 
 const { K, CHAIN, cat, bytesF, strF, u64F, Any, TxBody, Fee, SignerInfo, AuthInfo, TxRaw, txHashOf, lcdGet, lcdPost, jget, proveEndpoints,
-        rpc, waitReceipt, bech32Encode, convertBits, gasPriceOf, b64, sleep } = P;
+        rpc, bech32Encode, convertBits, gasPriceOf, b64, sleep } = P;
 
 const FEE_POOL_ALL = "3499";   // txfees fee-token pool for allUSDC (allUSDC/OSMO)
 const hex = u => Buffer.from(u).toString("hex");
@@ -107,6 +107,7 @@ async function getAccountRetry(chainId, addr) {
   throw Object.assign(last, { nothingSent: true });
 }
 
+const INCLUSION_POLL_MS = 2000;   // Osmosis, Injective and Avalanche all make a block in about 1-2 s
 /* waits for inclusion; resolves when included with code 0, throws `failed` when included with an error, and
    throws `expired` once the chain is past the tx's timeout height with the tx still absent */
 export async function waitCosmosTx(chainId, hash, timeoutHeight) {
@@ -115,7 +116,7 @@ export async function waitCosmosTx(chainId, hash, timeoutHeight) {
     if (s.state === "exists") return;
     if (s.state === "failed") throw Object.assign(new Error(`tx ${hash} failed in block: ${s.log}`), { txFailed: true });
     if (s.state === "expired") throw Object.assign(new Error(`tx ${hash} never landed and the chain is past its timeout height ${timeoutHeight}`), { txExpired: true });
-    await sleep(4000);
+    await sleep(INCLUSION_POLL_MS);
   }
 }
 export async function cosmosTxState(chainId, hash, timeoutHeight) {
@@ -186,8 +187,18 @@ export async function evmSend(chainId, wallet, { to, data, value }, note, onSign
   const sent = await sendRawEvm(chainId, raw, hash);
   if (sent.refused) throw Object.assign(new Error(`${chainId} refused the tx: ${sent.refused}`), { rejectedHash: hash });
   if (sent.ambiguous) throw new Error(`${chainId} send of ${hash} is unconfirmed (${sent.ambiguous}); the recorded tx is resolved by hash and nonce on the next tick`);
-  await waitReceipt(chainId, hash, 15 * 60 * 1000);
+  await waitReceiptFast(chainId, hash, 15 * 60 * 1000);
   return { hash };
+}
+/* the page's waitReceipt, polling every INCLUSION_POLL_MS instead of 4 s */
+export async function waitReceiptFast(chainId, hash, maxMs, sleepFn = sleep, now = () => Date.now()) {
+  const t0 = now();
+  while (now() - t0 < maxMs) {
+    const r = await rpc(chainId, "eth_getTransactionReceipt", [hash]);
+    if (r) { if (r.status !== "0x1") throw new Error(`tx ${hash} reverted`); return r; }
+    await sleepFn(INCLUSION_POLL_MS);
+  }
+  throw new Error(`no receipt for ${hash} after ${Math.round(maxMs / 60000)} minutes`);
 }
 /* Classifies one eth_sendRawTransaction. Only an explicit JSON-RPC refusal, confirmed by the node not knowing the
    hash, counts as "never sent" ({refused}); a timeout, dropped connection or unparseable reply may have been accepted

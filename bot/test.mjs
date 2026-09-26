@@ -11,7 +11,7 @@ import fs from "node:fs";
 import { P } from "./page.mjs";
 import { deriveWallet, SignDoc, signCosmosBytes, signEip1559, rlp, sendRawEvm } from "./sign.mjs";
 import { deficit, sharePct, quotaRoom, gasSpec } from "./chain.mjs";
-import { tightenMinAsset } from "./stages.mjs";
+import { tightenMinAsset, watchArrival } from "./stages.mjs";
 import { makeRunner, MAX_SIGNED_ATTEMPTS, ALERT_REQUOTES, fitsFeeCap, loopLossBound, cycleLossBound, nextUtcMidnight, planRecovery } from "./cycle.mjs";
 
 const FIX = p => JSON.parse(fs.readFileSync(new URL("../test-fixtures/" + p, import.meta.url), "utf8"));
@@ -140,6 +140,48 @@ ok(bad, "invalid mnemonic refused");
   ok(after.amount === AMT, "the bot raises min_asset to the full amount");
   ok(P.validateInjToAll(r, ctx3).ok, "the tightened route still validates");
   ok(P.skipMsgToAny(r.txs[0].cosmos_tx.msgs[0]).length > 600, "the tightened msg still encodes");
+}
+
+/* ---------- arrival: the balance decides, Skip's status only reports failures ---------- */
+{
+  // a fake clock: every sleep advances it and yields, so the status poller and the balance poller interleave
+  const clock = () => { const c = { t: 0 }; c.now = () => c.t; c.sleep = async ms => { c.t += ms; await new Promise(r => setImmediate(r)); }; return c; };
+  const seq = vals => { let i = 0; return async () => vals[Math.min(i++, vals.length - 1)]; };
+  const base = c => ({ before: "1000", expected: "500", what: "Injective USDC.inj", sleepFn: c.sleep, now: c.now, pollMs: 2000, skipPollMs: 6000, maxMs: 60000 });
+  {
+    const c = clock(); let statusCalls = 0;
+    let reads = 0; const vals = [1000n, 1000n, 1500n];
+    const r = await watchArrival({ ...base(c), read: async () => vals[Math.min(reads++, 2)], status: async () => (statusCalls++, { state: "STATE_PENDING" }) });
+    ok(r === "500", "arrival returns as soon as the balance rises, while Skip still reports pending");
+    ok(reads === 3, "and on the first read that shows it");
+    const calls = statusCalls; await c.sleep(20000);
+    ok(statusCalls === calls, "the Skip status poller stops once arrival is decided");
+  }
+  {
+    const c = clock();
+    await rejects(watchArrival({ ...base(c), read: seq([1000n]), status: async () => ({ state: "STATE_COMPLETED_ERROR", error: { message: "ack error" } }) }),
+      /^Skip reports STATE_COMPLETED_ERROR/, "a terminal Skip error with no arrival fails with the message the runner judges");
+  }
+  {
+    const c = clock();
+    const r = await watchArrival({ ...base(c), read: seq([1000n, 1000n, 1000n, 1000n, 1000n, 1499n]), status: async () => ({ state: "STATE_COMPLETED_SUCCESS" }) });
+    ok(r === "499", "Skip completing first does not end the wait: the balance is still watched until it lands (within 0.1%)");
+  }
+  {
+    const c = clock();
+    const r = await watchArrival({ ...base(c), read: seq([1000n, 1500n]), status: async () => null });
+    ok(r === "500", "with Skip tracking unavailable the balance alone decides");
+  }
+  {
+    const c = clock();
+    await rejects(watchArrival({ ...base(c), read: seq([1100n]), status: async () => { throw new Error("503"); } }),
+      /^Injective USDC\.inj rose by only 0\.0001; expected 0\.0005\.$/, "no arrival within the window fails with the timeout message, even with Skip unreachable");
+  }
+  {
+    const c = clock();
+    const e = await watchArrival({ ...base(c), read: async () => { throw new Error("fetch failed"); } }).catch(x => x);
+    ok(e instanceof Error && e.message === "fetch failed", "a failed balance read propagates as itself, so the runner treats it as transient");
+  }
 }
 
 /* ---------- runner: resume / retry / halt ---------- */

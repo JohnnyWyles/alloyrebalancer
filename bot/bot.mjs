@@ -26,6 +26,10 @@ const argv = process.argv.slice(2), cmd = argv.find(a => !a.startsWith("--")) ||
 const DIR = process.env.ALLOYBOT_STATE_DIR || "/var/lib/alloybot";
 const F = { config: path.join(DIR, "config.json"), state: path.join(DIR, "state.json"), halted: path.join(DIR, "HALTED"), stop: path.join(DIR, "STOP"), init: path.join(DIR, "JOURNAL_INITIALIZED") };
 const TICK_MS = 60000;
+/* a rate-limited loop re-reads the quotas this often rather than sleeping to the window's reset: room also reopens when
+   others send the denom back out (the quota counts net flow), when an admin resets the quota, or when the reserve in
+   config.json is lowered */
+const RATE_RECHECK_MS = 10 * 60000;
 const REFILL_FEE_BOUND = 50000n;   // 0.05 allUSDC: far above an Osmosis tx fee (0.0017 A1, 0.0045 refill observed), reserved before one is signed
 
 /* ---------------- config (re-read every tick, so edits apply without a restart) ---------------- */
@@ -191,8 +195,9 @@ async function tick(ctx) {
   if (s.cycle) { log(`resuming ${s.cycle.recovery ? "recovery" : "loop"} ${s.cycle.id} at ${(s.cycle.order || ORDER)[s.cycle.idx]}`); return runCycle(ctx, s); }
   if (!ctx.cfg.enabled || fs.existsSync(F.stop)) { saveState(s); return "disabled"; }
 
-  // pool health first: recovery swaps through pool 3497 too (A3's hook swap, N0), so it waits for a healthy pool as well
-  const pool = await readPool();
+  // pool health first: recovery swaps through pool 3497 too (A3's hook swap, N0), so it waits for a healthy pool as well.
+  // The balances for the recovery check below are read at the same time; they are only used once the pool is healthy.
+  const [pool, sb] = await Promise.all([readPool(), balances(ctx.W)]);
   if (!pool.active) return log("transmuter is inactive (frozen); not starting"), "frozen";
   if (pool.corrupted.length) return log("transmuter has corrupted denoms:", pool.corrupted.join(", ")), "frozen";
   if (pool.limiters.length) return log(`transmuter has ${pool.limiters.length} limiter(s) set; not starting until they are reviewed`), "limited";
@@ -200,7 +205,7 @@ async function tick(ctx) {
   /* Funds outside the alloy with no loop in flight. A public endpoint a few blocks behind can still show what the last
      stage just sent, so a sighting only counts once a second reading at least 50 s later agrees; then the part of the
      loop that starts where the funds are brings them home. This runs whether or not the pool is at target. */
-  const sb = await balances(ctx.W), strand = usdc(ctx.cfg.stranded_threshold_usdc);
+  const strand = usdc(ctx.cfg.stranded_threshold_usdc);
   const plan = planRecovery(sb, strand, ORDER);
   if (!plan) { if (s.strandSeen) { log(`funds outside the alloy (${s.strandSeen.what}) are gone on a second reading: it was a lagging endpoint`); s.strandSeen = undefined; saveState(s); } }
   else if (!s.strandSeen || s.strandSeen.what !== plan.recovery || Date.now() - s.strandSeen.at > 15 * 60000) {
@@ -221,6 +226,9 @@ async function tick(ctx) {
     await alert(ctx.cfg, `recovering ${fmtUnits(plan.amountIn)} ${plan.recovery} via ${plan.order.slice(plan.idx).join(" -> ")}`);
     return runCycle(ctx, s);
   }
+  // fee-cap and gas waits end at the next 00:00 UTC; a wait saved beyond that is a rate-limit wait written by an older
+  // build (which slept to the window's reset), so it is shortened to the re-check interval
+  if (s.waitUntil && s.waitUntil > nextUtcMidnight()) { log(`saved wait until ${new Date(s.waitUntil).toISOString()} is a rate-limit wait; re-checking the quotas now`); s.waitUntil = undefined; saveState(s); }
   if (s.waitUntil && Date.now() < s.waitUntil) return "waiting";
   const need = deficit(pool, ctx.cfg.target_inj_pct);
   log(`pool: USDC.inj ${sharePct(pool).toFixed(2)}% (target ${ctx.cfg.target_inj_pct}%), short by ${fmtUnits(need)}`);
@@ -245,11 +253,13 @@ async function tick(ctx) {
     saveState(s); return log(`a ${fmtUnits(amount)} loop (worst-case loss ${fmtUnits(loopLossBound(amount, ctx.cfg.max_loop_loss_bps))} + fee) does not fit in today's remaining fee budget; waiting for 00:00 UTC`), "capped";
   }
 
-  for (const [denom, dir, ch, label] of [[K.NOBLE, "out", K.OSMO_TO_NOBLE, "USDC.noble outflow"], [K.INJ_IBC, "in", K.OSMO_TO_INJ, "USDC.inj inflow"]]) {
-    const h = await headroom(denom, dir, ch, ctx.cfg.rate_limit_margin_pct);
+  const legs = [[K.NOBLE, "out", K.OSMO_TO_NOBLE, "USDC.noble outflow"], [K.INJ_IBC, "in", K.OSMO_TO_INJ, "USDC.inj inflow"]];
+  const rooms = await Promise.all(legs.map(([denom, dir, ch]) => headroom(denom, dir, ch, ctx.cfg.rate_limit_margin_pct)));
+  for (const [i, [, , , label]] of legs.entries()) {
+    const h = rooms[i];
     if (h.room !== null && h.room < amount) {
-      s.waitUntil = h.resetsAt || Date.now() + 3600000; saveState(s);
-      return log(`${label} rate limit ${h.quota} has ${fmtUnits(h.room)} room; waiting until ${new Date(s.waitUntil).toISOString()}`), "rate-limited";
+      s.waitUntil = Math.min(h.resetsAt || Infinity, Date.now() + RATE_RECHECK_MS); saveState(s);
+      return log(`${label} rate limit ${h.quota} has ${fmtUnits(h.room)} room${h.resetsAt ? ` (window resets ${new Date(h.resetsAt).toISOString()})` : ""}; checking again at ${new Date(s.waitUntil).toISOString()}`), "rate-limited";
     }
   }
 
