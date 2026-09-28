@@ -1,6 +1,15 @@
-/* The noble -> inj loop, headless: the page's A1/A2/A3 with Keplr and the confirm sheets replaced by the bot's own signer
- * and a journal. Every Skip response goes through the page's validator before anything is signed, and a refusal halts.
+/* The noble -> inj loop, headless, in two implementations.
  *
+ * CCTP (the default): every message is built here and every bridge is relayed by the bot itself; Skip is not involved.
+ *   C1  Osmosis:      allUSDC -> USDC.noble (1:1 on pool 3497) + IBC to Noble's orbiter, which burns via CCTP v1
+ *   C1m Avalanche:    mint that burn (MessageTransmitter v1.receiveMessage with Circle's attestation)
+ *   C2  Avalanche:    burn with TokenMessengerV2.depositForBurn toward Injective EVM (standard finality, no fee)
+ *   C2m Injective EVM: mint it (MessageTransmitterV2.receiveMessage)
+ *   C3  Injective:    IBC the USDC.inj to our own Osmosis address, no memo
+ *   C3s Osmosis:      USDC.inj -> allUSDC, 1:1 on pool 3497
+ *
+ * Skip (--skip): the page's A1/A2/A3 with Keplr and the confirm sheets replaced by the bot's own signer and a journal.
+ * Every Skip response goes through the page's validator before anything is signed, and a refusal halts.
  *   A1  Osmosis:   allUSDC -> USDC.noble (own 1:1 swap on pool 3497) + Skip's IBC to Noble's orbiter, CCTP v1 -> Avalanche
  *   A2  Avalanche: USDC -> Injective USDC.inj (Skip's CCTP v2 adapter)
  *   A3  Injective: USDC.inj -> IBC -> Osmosis, ibc-hooks swap into allUSDC on pool 3497
@@ -13,9 +22,11 @@
 import { P } from "./page.mjs";
 import { signAndBroadcast, evmSend, sendRawEvm, cosmosTxState, evmTxState, rebroadcastCosmos, waitCosmosTx, waitReceiptFast } from "./sign.mjs";
 import { headroom, readPool } from "./chain.mjs";
+import { CCTP, orbiterMemo, depositForBurnV2Calldata, receiveMessageCalldata, parseMessageV1, parseMessageV2, checkBurnV1, checkBurnV2,
+         messageFromReceipt, waitAttestation, v1NonceKey, nonceUsed, cctpSelfCheck, packetSeqOf, findNobleReceipt, checkNobleBurn } from "./cctp.mjs";
 
-const { K, Any, MsgSwapExactAmountIn, skipMsgToAny, skipRoute, validateNobleToHub, validateHubToInj, validateInjToAll, assertChannel,
-        bankBalance, erc20BalanceOf, erc20Allowance, approvalPlan, approveCalldata, skipTrack, skipStatus, fmtUnits, sleep } = P;
+const { K, Any, MsgSwapExactAmountIn, MsgTransfer, skipMsgToAny, skipRoute, validateNobleToHub, validateHubToInj, validateInjToAll, assertChannel, checkOrbiterMemo,
+        bankBalance, erc20BalanceOf, erc20Allowance, approvalPlan, approveCalldata, skipTrack, skipStatus, lcdGet, rpc, fmtUnits, sleep } = P;
 
 const AVAX = "43114", H = K.HUB[AVAX];
 export const halt = msg => Object.assign(new Error(msg), { halt: true });
@@ -77,6 +88,12 @@ const avaxUsdc = ctx => erc20BalanceOf(AVAX, H.usdc, ctx.W.evm);
 const injUsdc = ctx => bankBalance("injective-1", ctx.W.inj, K.INJ_ERC20);
 const osmoAll = ctx => bankBalance("osmosis-1", ctx.W.osmo, K.ALL);
 const osmoNoble = ctx => bankBalance("osmosis-1", ctx.W.osmo, K.NOBLE);
+const osmoInj = ctx => bankBalance("osmosis-1", ctx.W.osmo, K.INJ_IBC);
+/* a definitive "this stage did not deliver" that is not a balance timeout: the runner then asks refunded() */
+const arrivalFailed = msg => Object.assign(new Error(msg), { arrivalFailed: true });
+const IBC_TIMEOUT_MS = 60 * 60000;   // an unrelayed packet times out (and refunds) after an hour
+const ibcTimeout = () => String((BigInt(Date.now()) + BigInt(IBC_TIMEOUT_MS)) * 1000000n);
+const INJ_EVM = K.INJ_EVM_CHAIN;
 
 async function needRateRoom(denom, direction, channel, amount, ctx) {
   const h = await headroom(denom, direction, channel, ctx.cfg.rate_limit_margin_pct);
@@ -93,11 +110,41 @@ async function needHealthyPool() {
   if (why) throw wait(`pool ${K.POOL} is ${why}; this stage waits until it is healthy`, Date.now() + 10 * 60000);
 }
 
-/* cosmos stages share the "how did the recorded tx end" logic; the EVM stage has its own */
+/* cosmos stages share the "how did the recorded tx end" logic; the EVM stages share theirs */
 const cosmosTx = chain => ({
   async state(tx) { return (await cosmosTxState(chain, tx.hash, tx.timeoutHeight)).state; },
   async rebroadcast(tx) { await rebroadcastCosmos(chain, tx.raw); await waitCosmosTx(chain, tx.hash, tx.timeoutHeight); },
 });
+const evmTx = chain => ({
+  async state(tx, ctx) { return evmTxState(chain, tx.hash, tx.nonce, ctx.W.evm); },
+  /* the same signed bytes again. A deterministic refusal with the hash unknown (e.g. its max fee is now below the base
+     fee after the node dropped it) means it can never land as signed, so the runner may sign it again */
+  async rebroadcast(tx) {
+    const r = await sendRawEvm(chain, tx.raw, tx.hash);
+    if (r.refused) throw Object.assign(new Error(`recorded tx ${tx.hash} is refused on rebroadcast: ${r.refused}`), { txExpired: true });
+    await waitReceiptFast(chain, tx.hash, 15 * 60 * 1000);
+  },
+});
+const evmOpts = (ctx, chain) => ({ ...ctx.signOpts, maxFeeGwei: chain === AVAX ? ctx.cfg.avax_max_fee_gwei : ctx.cfg.inj_evm_max_fee_gwei });
+
+/* Mint a burn Circle has attested, on `chain`, through `transmitter`. `check` validates the attested message and returns
+   its used-nonce key. Only our address may mint (destinationCaller), so a nonce that is already used was minted by an
+   earlier attempt of this stage: then nothing is sent and arrival is judged from the balance that mint left. */
+async function mintAttested(ctx, st, note, onSigned, { chain, transmitter, sourceDomain, srcTx, pick, check, read, what }) {
+  const att = await waitAttestation(sourceDomain, srcTx, pick, { note });
+  if (!att) throw wait(`Circle has not attested ${srcTx} yet; checking again shortly`, Date.now() + 30000);
+  const key = check(att.message);
+  const bal = await read();
+  if (await nonceUsed(chain, transmitter, key)) {
+    if (bal < BigInt(st.amountIn)) throw halt(`the burn from ${srcTx} is already minted but ${what} holds only ${fmtUnits(bal)}; look before resuming`);
+    Object.assign(st, { before: (bal - BigInt(st.amountIn)).toString(), expected: st.amountIn });
+    note(`already minted (nonce used); ${what} holds ${fmtUnits(bal)}`);
+    return { alreadyMinted: true };
+  }
+  Object.assign(st, { before: bal.toString(), expected: st.amountIn });
+  note(`minting ${fmtUnits(st.amountIn)} on ${K.EVM[chain].name} with Circle's attestation`);
+  return evmSend(chain, ctx.wallet, { to: transmitter, data: receiveMessageCalldata(att.message, att.attestation), value: 0 }, note, onSigned, evmOpts(ctx, chain));
+}
 
 export const STAGES = {
   A1: {
@@ -215,8 +262,175 @@ export const STAGES = {
       return false;
     },
   },
+
+  /* ---------------- CCTP (default): no Skip, the bot relays both bridges itself ---------------- */
+  C1: {
+    title: "Osmosis: allUSDC -> USDC.noble (pool 3497) -> Noble orbiter, CCTP v1 burn toward Avalanche",
+    ...cosmosTx("osmosis-1"),
+    async send(ctx, st, note, onSigned) {
+      const amountIn = st.amountIn;
+      // after a refunded IBC hop (refunded() below) the USDC.noble is already on Osmosis: send it again without swapping more
+      const [noble, all] = await Promise.all([osmoNoble(ctx), osmoAll(ctx), needHealthyPool(), cctpSelfCheck(),
+        assertChannel("osmosis-1", K.OSMO_TO_NOBLE, "noble-1"), needRateRoom(K.NOBLE, "out", K.OSMO_TO_NOBLE, amountIn, ctx)]);
+      const resend = st.refunds > 0 && noble >= BigInt(amountIn);
+      if (!resend && all < BigInt(amountIn)) throw halt(`allUSDC balance is below the ${fmtUnits(amountIn)} this loop was started with`);
+      const memo = orbiterMemo(ctx.W.evm, H.cctpDomain), errs = [];
+      checkOrbiterMemo(errs, JSON.parse(memo), H, ctx.W.evm);   // the page's own orbiter check, on the memo we built
+      if (errs.length) throw halt("orbiter memo refused: " + errs.join("; "));
+      Object.assign(st, { expected: amountIn });
+      const anys = [
+        ...(resend ? [] : [Any("/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn", MsgSwapExactAmountIn({ sender: ctx.W.osmo, routes: [{ poolId: K.POOL, tokenOutDenom: K.NOBLE }],
+          tokenIn: { denom: K.ALL, amount: amountIn }, tokenOutMinAmount: amountIn }))]),   // 1:1 or the whole tx fails
+        Any("/ibc.applications.transfer.v1.MsgTransfer", MsgTransfer({ sourcePort: "transfer", sourceChannel: K.OSMO_TO_NOBLE, token: { denom: K.NOBLE, amount: amountIn },
+          sender: ctx.W.osmo, receiver: K.NOBLE_ORBITER, timeoutHeight: {}, timeoutTimestamp: ibcTimeout(), memo })),
+      ];
+      note(`${resend ? `resend the refunded ${fmtUnits(amountIn)} USDC.noble` : `swap ${fmtUnits(amountIn)} allUSDC -> USDC.noble`}, IBC to the Noble orbiter for a CCTP burn to ${ctx.W.evm} on Avalanche`);
+      return signAndBroadcast("osmosis-1", ctx.wallet, anys, note, onSigned, ctx.signOpts);
+    },
+    /* arrival is the orbiter's burn on Noble: find the tx that received our packet, then check its ack and the burn */
+    async arrive(ctx, st, note) {
+      if (st.packet?.hash !== st.tx.hash) {
+        const q = await lcdGet("osmosis-1", `/cosmos/tx/v1beta1/txs/${st.tx.hash}`);
+        st.packet = { hash: st.tx.hash, seq: packetSeqOf(q.tx_response, K.OSMO_TO_NOBLE) };
+      }
+      const t0 = Date.now();
+      for (;;) {
+        const r = await findNobleReceipt(st.packet.seq, K.OSMO_TO_NOBLE);
+        if (r?.ackError) throw arrivalFailed(`Noble acknowledged packet ${st.packet.seq} with an error (${r.hash}): ${r.ackError}`);
+        if (r) {
+          const exp = { amount: st.amountIn, destinationDomain: H.cctpDomain, mintRecipient: ctx.W.evm, destinationCaller: ctx.W.evm };
+          const errs = [...checkNobleBurn(r.burn, exp),
+            ...checkBurnV1(parseMessageV1(r.message), { ...exp, sourceDomain: CCTP.DOMAIN["noble-1"], recipient: CCTP.TM_V1_AVAX, nonce: r.burn.nonce })];
+          if (errs.length) throw halt(`the orbiter's burn in ${r.hash} is not what C1 asked for: ${errs.join("; ")}`);
+          note(`Noble burned ${fmtUnits(r.burn.amount)} (tx ${r.hash}, CCTP nonce ${r.burn.nonce})`);
+          st.carry = { nobleTx: r.hash, nonce: String(r.burn.nonce) };
+          return String(r.burn.amount);
+        }
+        if (Date.now() - t0 >= ARRIVAL_MAX_MS) throw arrivalFailed(`Noble has not received packet ${st.packet.seq} after ${ARRIVAL_MAX_MS / 60000} min`);
+        await sleep(4000);
+      }
+    },
+    /* the IBC hop was acked with an error or timed out: the USDC.noble is back on Osmosis. Polls up to 10 minutes. */
+    async refunded(ctx, st) {
+      for (let i = 0; i < 60; i++) { if (await osmoNoble(ctx) >= BigInt(st.amountIn)) return true; await sleep(10000); }
+      return false;
+    },
+  },
+
+  C1m: {
+    title: "Avalanche: mint the Noble burn (CCTP v1, self-relayed)",
+    ...evmTx(AVAX),
+    async send(ctx, st, note, onSigned) {
+      const c = st.carry;
+      if (!c?.nobleTx) throw halt("C1m has no Noble burn recorded to mint");
+      const exp = { sourceDomain: CCTP.DOMAIN["noble-1"], destinationDomain: H.cctpDomain, recipient: CCTP.TM_V1_AVAX, destinationCaller: ctx.W.evm,
+                    mintRecipient: ctx.W.evm, amount: st.amountIn, nonce: c.nonce };
+      return mintAttested(ctx, st, note, onSigned, { chain: AVAX, transmitter: CCTP.MT_V1_AVAX, sourceDomain: CCTP.DOMAIN["noble-1"], srcTx: c.nobleTx,
+        pick: m => String(m.eventNonce) === c.nonce, read: () => avaxUsdc(ctx), what: "Avalanche USDC",
+        check: msg => { const m = parseMessageV1(msg), e = checkBurnV1(m, exp); if (e.length) throw halt(`attested message refused: ${e.join("; ")}`); return v1NonceKey(m.sourceDomain, m.nonce); } });
+    },
+    async arrive(ctx, st, note) { return arrival(ctx, st, note, null, () => avaxUsdc(ctx), "Avalanche USDC"); },
+    async refunded() { return false; },   // a mint either lands or is attempted again; nothing is refunded
+  },
+
+  C2: {
+    title: "Avalanche: CCTP v2 burn toward Injective EVM",
+    ...evmTx(AVAX),
+    async send(ctx, st, note, onSigned) {
+      const amountIn = st.amountIn;
+      const [bal] = await Promise.all([avaxUsdc(ctx), cctpSelfCheck()]);
+      if (bal < BigInt(amountIn)) throw halt(`Avalanche USDC balance ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this stage expects`);
+      Object.assign(st, { expected: amountIn });
+      const eo = evmOpts(ctx, AVAX), have = await erc20Allowance(AVAX, H.usdc, ctx.W.evm, CCTP.TM_V2);
+      for (const amt of approvalPlan(have, amountIn)) {
+        note(`approving exactly ${fmtUnits(amt)} USDC to TokenMessengerV2`);
+        await evmSend(AVAX, ctx.wallet, { to: H.usdc, data: approveCalldata(CCTP.TM_V2, amt), value: 0 }, note, async () => {}, eo);   // an approval moves nothing
+      }
+      note(`CCTP v2 burn of ${fmtUnits(amountIn)} USDC to ${ctx.W.injHex} on Injective EVM (standard finality, no fee)`);
+      return evmSend(AVAX, ctx.wallet, { to: CCTP.TM_V2, value: 0, data: depositForBurnV2Calldata({ amount: amountIn, destinationDomain: CCTP.DOMAIN[INJ_EVM],
+        mintRecipient: ctx.W.injHex, burnToken: H.usdc, destinationCaller: ctx.W.injHex, maxFee: 0, minFinalityThreshold: CCTP.FINALITY_STANDARD }) }, note, onSigned, eo);
+    },
+    /* arrival is the burn itself: its receipt must carry exactly our message */
+    async arrive(ctx, st, note) {
+      const r = await rpc(AVAX, "eth_getTransactionReceipt", [st.tx.hash]);
+      if (!r) throw new Error(`no receipt for the burn ${st.tx.hash} yet`);   // transient: the next tick looks again
+      if (r.status !== "0x1") throw Object.assign(new Error(`burn ${st.tx.hash} reverted`), { halt: true });
+      const e = checkBurnV2(parseMessageV2(messageFromReceipt(r)), { sourceDomain: H.cctpDomain, destinationDomain: CCTP.DOMAIN[INJ_EVM], destinationCaller: ctx.W.injHex,
+        burnToken: H.usdc, mintRecipient: ctx.W.injHex, amount: st.amountIn, messageSender: ctx.W.evm }, false);
+      if (e.length) throw halt(`burn ${st.tx.hash} emitted an unexpected message: ${e.join("; ")}`);
+      note(`burned ${fmtUnits(st.amountIn)} on Avalanche (tx ${st.tx.hash})`);
+      st.carry = { avaxTx: st.tx.hash };
+      return st.amountIn;
+    },
+    async refunded() { return false; },   // a burn is final
+  },
+
+  C2m: {
+    title: "Injective EVM: mint the Avalanche burn (CCTP v2, self-relayed)",
+    ...evmTx(INJ_EVM),
+    async send(ctx, st, note, onSigned) {
+      const c = st.carry;
+      if (!c?.avaxTx) throw halt("C2m has no Avalanche burn recorded to mint");
+      const exp = { sourceDomain: H.cctpDomain, destinationDomain: CCTP.DOMAIN[INJ_EVM], destinationCaller: ctx.W.injHex, burnToken: H.usdc,
+                    mintRecipient: ctx.W.injHex, amount: st.amountIn, messageSender: ctx.W.evm };
+      return mintAttested(ctx, st, note, onSigned, { chain: INJ_EVM, transmitter: CCTP.MT_V2, sourceDomain: H.cctpDomain, srcTx: c.avaxTx,
+        pick: m => { try { return checkBurnV2(parseMessageV2(m.message), exp, false).length === 0; } catch { return false; } },
+        read: () => injUsdc(ctx), what: "Injective USDC.inj",
+        check: msg => { const m = parseMessageV2(msg), e = checkBurnV2(m, exp, true); if (e.length) throw halt(`attested message refused: ${e.join("; ")}`); return m.nonce; } });
+    },
+    async arrive(ctx, st, note) { return arrival(ctx, st, note, null, () => injUsdc(ctx), "Injective USDC.inj"); },
+    async refunded() { return false; },
+  },
+
+  C3: {
+    title: "Injective: USDC.inj -> IBC -> our Osmosis address",
+    ...cosmosTx("injective-1"),
+    async send(ctx, st, note, onSigned) {
+      const amountIn = st.amountIn;
+      const [bal, , , before] = await Promise.all([injUsdc(ctx), assertChannel("injective-1", K.INJ_TO_OSMO, "osmosis-1"),
+        needRateRoom(K.INJ_IBC, "in", K.OSMO_TO_INJ, amountIn, ctx), osmoInj(ctx)]);
+      if (bal < BigInt(amountIn)) throw halt(`Injective USDC.inj balance ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this stage expects`);
+      Object.assign(st, { before: before.toString(), expected: amountIn });
+      note(`IBC ${fmtUnits(amountIn)} USDC.inj to ${ctx.W.osmo}`);
+      return signAndBroadcast("injective-1", ctx.wallet, [Any("/ibc.applications.transfer.v1.MsgTransfer", MsgTransfer({ sourcePort: "transfer", sourceChannel: K.INJ_TO_OSMO,
+        token: { denom: K.INJ_ERC20, amount: amountIn }, sender: ctx.W.inj, receiver: ctx.W.osmo, timeoutHeight: {}, timeoutTimestamp: ibcTimeout(), memo: "" }))], note, onSigned, ctx.signOpts);
+    },
+    async arrive(ctx, st, note) { return arrival(ctx, st, note, null, () => osmoInj(ctx), "USDC.inj on Osmosis"); },
+    /* the packet was acked with an error or timed out: USDC.inj is back on Injective. Polls up to 10 minutes. */
+    async refunded(ctx, st) {
+      for (let i = 0; i < 60; i++) {
+        const [inj, osmo] = await Promise.all([injUsdc(ctx), osmoInj(ctx)]);
+        if (osmo - BigInt(st.before) >= BigInt(st.amountIn) / 2n) return false;   // it did arrive: not a refund
+        if (inj >= BigInt(st.amountIn)) return true;
+        await sleep(10000);
+      }
+      return false;
+    },
+  },
+
+  /* the loop's last CCTP stage, and the recovery for USDC.inj found on Osmosis with no loop in flight */
+  C3s: {
+    title: "Osmosis: USDC.inj -> allUSDC (pool 3497)",
+    ...cosmosTx("osmosis-1"),
+    async send(ctx, st, note, onSigned) {
+      const amountIn = st.amountIn;
+      const [bal] = await Promise.all([osmoInj(ctx), needHealthyPool()]);
+      if (bal < BigInt(amountIn)) throw halt(`USDC.inj balance on Osmosis ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this stage expects`);
+      Object.assign(st, { before: (await osmoAll(ctx)).toString(), expected: amountIn });
+      note(`swap ${fmtUnits(amountIn)} USDC.inj -> allUSDC on pool ${K.POOL}, minimum out ${fmtUnits(amountIn)}`);
+      return signAndBroadcast("osmosis-1", ctx.wallet, [Any("/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn", MsgSwapExactAmountIn({ sender: ctx.W.osmo,
+        routes: [{ poolId: K.POOL, tokenOutDenom: K.ALL }], tokenIn: { denom: K.INJ_IBC, amount: amountIn }, tokenOutMinAmount: amountIn }))], note, onSigned, ctx.signOpts);
+    },
+    async arrive(ctx, st, note) { return arrival(ctx, st, note, null, () => osmoAll(ctx), "allUSDC"); },
+    async refunded() { return false; },   // a swap either lands or fails in block
+  },
 };
-export const ORDER = ["A1", "A2", "A3"];
+export const SKIP_ORDER = ["A1", "A2", "A3"];
+export const CCTP_ORDER = ["C1", "C1m", "C2", "C2m", "C3", "C3s"];
+/* a journal written before cycles recorded their order is a Skip loop */
+export const ORDER = SKIP_ORDER;
+/* where each order picks up funds found outside the alloy (see cycle.mjs planRecovery) */
+export const RECOVERY_STARTS = { skip: { avaxUsdc: "A2", injUsdc: "A3" }, cctp: { avaxUsdc: "C2", injUsdc: "C3" } };
 
 /* The transmuter is 1:1 with no fee, so the hook swap's minimum is raised to the full amount: a short fill reverts
    the swap, the packet is acked with an error and USDC.inj is refunded, instead of the loop landing short. */

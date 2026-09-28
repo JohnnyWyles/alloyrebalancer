@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* Alloy Rebalancer bot: keeps USDC.inj at or above a target share of the allUSDC alloy (pool 3497) by running the
- * noble -> inj loop (A1 Osmosis, A2 Avalanche, A3 Injective) with its own wallet.
+ * noble -> inj loop with its own wallet. By default every leg is built and relayed by the bot over Circle CCTP (stages
+ * C1..C3s in stages.mjs); --skip runs the older Skip-routed loop (A1 Osmosis, A2 Avalanche, A3 Injective) instead.
  *
  *   node bot.mjs run        the service loop (checks every 60 s; a loop starts only when it is needed and allowed)
  *   node bot.mjs once       one decision tick, then exit
@@ -8,6 +9,8 @@
  *   node bot.mjs addresses  the wallet's osmo1 / inj1 / 0x addresses
  *   node bot.mjs keygen F   write a new mnemonic to file F (mode 600, never overwrites)
  *   add --dry-run to build, validate and simulate everything but broadcast nothing
+ *   add --skip to start new loops through Skip's routes (A1/A2/A3) instead of the self-relayed CCTP stages. A loop in
+ *   flight always finishes in the implementation it started with.
  *
  * Environment:
  *   ALLOYBOT_MNEMONIC_FILE  path to the mnemonic (default: $CREDENTIALS_DIRECTORY/mnemonic, i.e. systemd LoadCredential)
@@ -17,12 +20,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { P } from "./page.mjs";
 import { deriveWallet } from "./sign.mjs";
-import { STAGES, ORDER, halt, tightenMinAsset } from "./stages.mjs";
+import { STAGES, ORDER, SKIP_ORDER, CCTP_ORDER, RECOVERY_STARTS, halt, tightenMinAsset } from "./stages.mjs";
+import { CCTP, cctpSelfCheck, depositForBurnV2Calldata, orbiterMemo } from "./cctp.mjs";
 import { makeRunner, fitsFeeCap, loopLossBound, cycleLossBound, planRecovery, nextUtcMidnight } from "./cycle.mjs";
 import { readPool, deficit, sharePct, headroom, balances, refillGas } from "./chain.mjs";
 
 const { K, fmtUnits, setLog, PROVEN, sleep } = P;
 const argv = process.argv.slice(2), cmd = argv.find(a => !a.startsWith("--")) || "status", DRY = argv.includes("--dry-run");
+const MODE = argv.includes("--skip") ? "skip" : "cctp", MODE_ORDER = MODE === "skip" ? SKIP_ORDER : CCTP_ORDER;
 const DIR = process.env.ALLOYBOT_STATE_DIR || "/var/lib/alloybot";
 const F = { config: path.join(DIR, "config.json"), state: path.join(DIR, "state.json"), halted: path.join(DIR, "HALTED"), stop: path.join(DIR, "STOP"), init: path.join(DIR, "JOURNAL_INITIALIZED") };
 const TICK_MS = 60000;
@@ -47,6 +52,7 @@ const DEFAULTS = {
   gas_refill_usdc: { avax: 2, inj: 1 },   // allUSDC per refill; Axelar's flat fee makes small AVAX refills poor value
   gas_min_value_pct: 80,     // a refill quote must deliver at least this % of its allUSDC in gas
   avax_max_fee_gwei: 50,
+  inj_evm_max_fee_gwei: 5,   // Injective EVM mint (C2m); its base fee is the chain's fixed 0.16 gwei
   osmo_fee_margin: 2,       // Osmosis fee (in allUSDC) over the base fee at the fee pool's spot price
   rate_limit_margin_pct: 1,  // % of each rate-limit quota cap left free for other users
   stranded_threshold_usdc: 1,
@@ -186,13 +192,24 @@ async function buyGas(ctx, s, g) {
   return { status: "refilled" };
 }
 
+/* A loop that has not signed its first stage has moved nothing, so it can start over in the implementation this process
+   runs (e.g. a Skip loop parked on "no routes found", restarted without --skip). Anything signed finishes as it began. */
+function switchUnsigned(s) {
+  const c = s.cycle, o = c.order || ORDER;
+  if (c.recovery || c.idx !== 0 || o.join() === MODE_ORDER.join()) return;
+  const st0 = c.stages[o[0]];
+  if (st0?.tx || (st0?.signed || 0) > 0 || (st0?.refunds || 0) > 0) return;
+  log(`loop ${c.id} has signed nothing yet; switching it from ${o.join(" -> ")} to ${MODE_ORDER.join(" -> ")}`);
+  c.order = MODE_ORDER; c.stages = {}; saveState(s);
+}
+
 /* ---------------- one decision ---------------- */
 async function tick(ctx) {
   const s = loadState(); rollDay(s); acknowledgeHalt(s);
   if (s.addrs && (s.addrs.osmo !== ctx.W.osmo || s.addrs.evm !== ctx.W.evm)) throw halt(`state.json belongs to ${s.addrs.osmo}, this mnemonic is ${ctx.W.osmo}`);
   s.addrs = { osmo: ctx.W.osmo, inj: ctx.W.inj, evm: ctx.W.evm };
   if (s.cycle && DRY) return log(`a real loop ${s.cycle.id} is in flight; dry run does nothing while it is`), "busy";
-  if (s.cycle) { log(`resuming ${s.cycle.recovery ? "recovery" : "loop"} ${s.cycle.id} at ${(s.cycle.order || ORDER)[s.cycle.idx]}`); return runCycle(ctx, s); }
+  if (s.cycle) { switchUnsigned(s); log(`resuming ${s.cycle.recovery ? "recovery" : "loop"} ${s.cycle.id} at ${(s.cycle.order || ORDER)[s.cycle.idx]}`); return runCycle(ctx, s); }
   if (!ctx.cfg.enabled || fs.existsSync(F.stop)) { saveState(s); return "disabled"; }
 
   // pool health first: recovery swaps through pool 3497 too (A3's hook swap, N0), so it waits for a healthy pool as well.
@@ -206,7 +223,7 @@ async function tick(ctx) {
      stage just sent, so a sighting only counts once a second reading at least 50 s later agrees; then the part of the
      loop that starts where the funds are brings them home. This runs whether or not the pool is at target. */
   const strand = usdc(ctx.cfg.stranded_threshold_usdc);
-  const plan = planRecovery(sb, strand, ORDER);
+  const plan = planRecovery(sb, strand, MODE_ORDER, Date.now(), RECOVERY_STARTS[MODE]);
   if (!plan) { if (s.strandSeen) { log(`funds outside the alloy (${s.strandSeen.what}) are gone on a second reading: it was a lagging endpoint`); s.strandSeen = undefined; saveState(s); } }
   else if (!s.strandSeen || s.strandSeen.what !== plan.recovery || Date.now() - s.strandSeen.at > 15 * 60000) {
     s.strandSeen = { what: plan.recovery, at: Date.now() }; saveState(s);
@@ -218,7 +235,8 @@ async function tick(ctx) {
     // the recovery's own worst-case loss (and N0's Osmosis fee) must fit today's budget before it starts: A2/A3 pay no
     // allUSDC fee, so nothing inside the runner would check it before the loss is booked at completion
     const bound = cycleLossBound(plan, plan.order, ctx.cfg.max_loop_loss_bps);
-    if (!fitsFeeCap({ capMicro: ctx.capMicro, bookedMicro: s.feesToday, feeMicro: plan.order.includes("N0") ? REFILL_FEE_BOUND : 0n, lossMicro: bound })) {
+    const osmoFee = plan.order.some(k => k === "N0" || k === "C3s") ? REFILL_FEE_BOUND : 0n;
+    if (!fitsFeeCap({ capMicro: ctx.capMicro, bookedMicro: s.feesToday, feeMicro: osmoFee, lossMicro: bound })) {
       s.waitUntil = nextUtcMidnight(); saveState(s);
       return log(`recovering ${fmtUnits(plan.amountIn)} ${plan.recovery} (worst-case loss ${fmtUnits(bound)}) does not fit today's remaining fee budget; the funds stay where they are until 00:00 UTC`), "capped";
     }
@@ -249,8 +267,10 @@ async function tick(ctx) {
   let amount = usdc(ctx.cfg.loop_usdc); if (need < amount) amount = need; if (idle < amount) amount = idle;
   if (amount < usdc(ctx.cfg.min_loop_usdc)) { saveState(s); return log(`idle allUSDC ${fmtUnits(b.all)} (reserve ${ctx.cfg.reserve_usdc}) is below min_loop_usdc`), "no-funds"; }
   // a loop starts only if its worst-case loss and a bound on its A1 fee fit in today's budget; A1 rechecks the exact fee
-  if (!fitsFeeCap({ capMicro: ctx.capMicro, bookedMicro: s.feesToday, amountIn: amount, bps: ctx.cfg.max_loop_loss_bps, feeMicro: REFILL_FEE_BOUND })) {
-    saveState(s); return log(`a ${fmtUnits(amount)} loop (worst-case loss ${fmtUnits(loopLossBound(amount, ctx.cfg.max_loop_loss_bps))} + fee) does not fit in today's remaining fee budget; waiting for 00:00 UTC`), "capped";
+  // the CCTP loop pays two Osmosis fees (C1 and C3s), so it reserves two bounds
+  const feeBound = MODE === "cctp" ? 2n * REFILL_FEE_BOUND : REFILL_FEE_BOUND, lossBound = loopLossBound(amount, ctx.cfg.max_loop_loss_bps, MODE_ORDER);
+  if (!fitsFeeCap({ capMicro: ctx.capMicro, bookedMicro: s.feesToday, feeMicro: feeBound, lossMicro: lossBound })) {
+    saveState(s); return log(`a ${fmtUnits(amount)} loop (worst-case loss ${fmtUnits(lossBound)} + fee) does not fit in today's remaining fee budget; waiting for 00:00 UTC`), "capped";
   }
 
   const legs = [[K.NOBLE, "out", K.OSMO_TO_NOBLE, "USDC.noble outflow"], [K.INJ_IBC, "in", K.OSMO_TO_INJ, "USDC.inj inflow"]];
@@ -264,9 +284,9 @@ async function tick(ctx) {
   }
 
   if (DRY) return dryRun(ctx, s, amount);
-  s.cycle = { id: new Date().toISOString().replace(/[-:]/g, "").slice(0, 15), amountIn: amount.toString(), idx: 0, stages: {}, poolShareAtStart: sharePct(pool) };
+  s.cycle = { id: new Date().toISOString().replace(/[-:]/g, "").slice(0, 15), amountIn: amount.toString(), idx: 0, order: MODE_ORDER, stages: {}, poolShareAtStart: sharePct(pool) };
   s.waitUntil = undefined; saveState(s);
-  log(`starting loop ${s.cycle.id}: ${fmtUnits(amount)} allUSDC`);
+  log(`starting loop ${s.cycle.id}: ${fmtUnits(amount)} allUSDC (${MODE})`);
   return runCycle(ctx, s);
 }
 
@@ -275,8 +295,9 @@ async function tick(ctx) {
    both gas refill routes are validated and simulated */
 async function dryRun(ctx, s, amount) {
   const a = amount.toString();
-  s.cycle = { id: "dry", amountIn: a, idx: 0, stages: {} };
+  s.cycle = { id: "dry", amountIn: a, idx: 0, order: MODE_ORDER, stages: {} };
   await runCycle(ctx, s);
+  if (MODE === "cctp") return dryRunCctp(ctx, a);
   const { skipRoute, validateHubToInj, validateInjToAll } = P, H = K.HUB["43114"], W = ctx.W;
   const v2 = validateHubToInj(await skipRoute(H.usdc, "43114", K.INJ_EVM_USDC, K.INJ_EVM_CHAIN, a, { "43114": W.evm, [K.INJ_EVM_CHAIN]: W.injHex }), { evm: W.evm, injHex: W.injHex, amountIn: a, hub: "43114" });
   log(`[dry A2] route ${v2.ok ? "ok" : "REFUSED: " + v2.errs.join("; ")}, ${fmtUnits(v2.amountOut || 0)} USDC.inj out`);
@@ -290,15 +311,31 @@ async function dryRun(ctx, s, amount) {
   return "dry";
 }
 
+/* CCTP mode: C1 was signed and simulated above. The later stages need C1's funds to exist, so they are shown, not
+   simulated: the pinned contracts are checked onchain and the C2 burn call is built for the same amount. */
+async function dryRunCctp(ctx, a) {
+  const W = ctx.W, H = K.HUB["43114"];
+  await cctpSelfCheck();
+  log(`[dry] CCTP contracts check out: MessageTransmitter v1 ${CCTP.MT_V1_AVAX} (Avalanche), V2 ${CCTP.MT_V2}, TokenMessengerV2 ${CCTP.TM_V2}`);
+  log(`[dry C1] orbiter memo ${orbiterMemo(W.evm, H.cctpDomain)}`);
+  log(`[dry C1m] would mint on Avalanche with receiveMessage(message, attestation) once Circle attests the Noble burn`);
+  log(`[dry C2] would call TokenMessengerV2 with ${depositForBurnV2Calldata({ amount: a, destinationDomain: CCTP.DOMAIN[K.INJ_EVM_CHAIN], mintRecipient: W.injHex, burnToken: H.usdc, destinationCaller: W.injHex })}`);
+  log(`[dry C2m, C3, C3s] mint on Injective EVM, IBC ${fmtUnits(a)} USDC.inj to ${W.osmo}, swap 1:1 into allUSDC on pool ${K.POOL}`);
+  for (const g of ["avax", "inj"]) {
+    try { await refillGas(g, ctx, m => log(`[dry gas ${g}]`, m)); } catch (e) { log(`[dry gas ${g}] ${e.message}`); }
+  }
+  return "dry";
+}
+
 /* ---------------- commands ---------------- */
 async function status(ctx) {
   const s = loadState({ readOnly: true }), cfg = ctx.cfg, pool = await readPool(), b = await balances(ctx.W);
   const rl = await Promise.all([headroom(K.NOBLE, "out", K.OSMO_TO_NOBLE), headroom(K.INJ_IBC, "in", K.OSMO_TO_INJ)]);
   console.log(JSON.stringify({
-    addresses: ctx.W, journalLost: s.journalLost || null, halted: fs.existsSync(F.halted) ? fs.readFileSync(F.halted, "utf8").split("\n")[1] : null, stopFile: fs.existsSync(F.stop), enabled: cfg.enabled,
+    addresses: ctx.W, mode: MODE, journalLost: s.journalLost || null, halted: fs.existsSync(F.halted) ? fs.readFileSync(F.halted, "utf8").split("\n")[1] : null, stopFile: fs.existsSync(F.stop), enabled: cfg.enabled,
     pool: { noble: fmtUnits(pool.noble), inj: fmtUnits(pool.inj), total: fmtUnits(pool.total), injPct: sharePct(pool), target: cfg.target_inj_pct, shortBy: fmtUnits(deficit(pool, cfg.target_inj_pct)),
             active: pool.active, corrupted: pool.corrupted, limiters: pool.limiters.length },
-    balances: { allUSDC: fmtUnits(b.all), usdcNobleOnOsmosis: fmtUnits(b.noble), avalancheUSDC: fmtUnits(b.avaxUsdc), AVAX: fmtUnits(b.avax, 18), INJ: fmtUnits(b.inj, 18), injectiveUSDCinj: fmtUnits(b.injUsdc) },
+    balances: { allUSDC: fmtUnits(b.all), usdcNobleOnOsmosis: fmtUnits(b.noble), usdcInjOnOsmosis: fmtUnits(b.injOnOsmo), avalancheUSDC: fmtUnits(b.avaxUsdc), AVAX: fmtUnits(b.avax, 18), INJ: fmtUnits(b.inj, 18), injectiveUSDCinj: fmtUnits(b.injUsdc) },
     rateLimitRoom: { nobleOut: rl[0].room === null ? "no quota" : fmtUnits(rl[0].room), injIn: rl[1].room === null ? "no quota" : fmtUnits(rl[1].room) },
     today: { day: s.day, loops: s.loopsToday || 0, feesUsdc: fmtUnits(s.feesToday || 0), refills: s.refillsToday || 0 },
     cycle: s.cycle || null, lastLoops: (s.history || []).slice(-5),
@@ -339,7 +376,7 @@ async function main() {
   if (cmd !== "run" && cmd !== "once") throw new Error(`unknown command ${cmd}`);
   loadConfig(true);   // fail at startup, not on the first tick, when config.json is missing or invalid
   lock();
-  log(`alloybot ${cmd}${DRY ? " (dry run)" : ""} for ${wallet.W.osmo} / ${wallet.W.inj} / ${wallet.W.evm}, state in ${DIR}`);
+  log(`alloybot ${cmd} (${MODE})${DRY ? " (dry run)" : ""} for ${wallet.W.osmo} / ${wallet.W.inj} / ${wallet.W.evm}, state in ${DIR}`);
   let lastHaltLog = 0, transient = 0;
   for (;;) {
     let ctx;
@@ -354,7 +391,7 @@ async function main() {
     } catch (e) {
       const cfg = ctx?.cfg || DEFAULTS;
       if (e.halt) { writeHalt(e.message); await alert(cfg, "HALTED: " + e.message); }
-      else if (e.wait) { log("waiting:", e.message); if (e.until) { const s = loadState(); if (!s.cycle) { s.waitUntil = e.until; saveState(s); } } }
+      else if (e.wait || e.waitRetry) { log("waiting:", e.message); if (e.until) { const s = loadState(); if (!s.cycle) { s.waitUntil = e.until; saveState(s); } } }
       else { transient++; log(`error (${transient} in a row): ${e.message}`); if (transient % 15 === 0) await alert(cfg, `${transient} consecutive errors, latest: ${e.message}`); for (const k of Object.keys(PROVEN)) delete PROVEN[k]; }
     }
     if (cmd === "once" || DRY) return;

@@ -45,3 +45,6 @@ const src = [
 
 /* imported from memory (the extracted code has no imports of its own), so the bot needs no writable code directory */
 export const P = await import("data:text/javascript;base64," + Buffer.from(src).toString("base64"));
+/* bot only: a second Avalanche RPC. The page's single public endpoint rate-limits (HTTP 429) under sustained polling,
+   and the CCTP loop sends twice on Avalanche; rpc() and sendRawEvm() fall through the list in order. */
+P.K.EVM["43114"].rpc.push("https://avalanche-c-chain-rpc.publicnode.com");

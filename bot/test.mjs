@@ -13,6 +13,9 @@ import { deriveWallet, SignDoc, signCosmosBytes, signEip1559, rlp, sendRawEvm } 
 import { deficit, sharePct, quotaRoom, gasSpec } from "./chain.mjs";
 import { tightenMinAsset, watchArrival } from "./stages.mjs";
 import { makeRunner, MAX_SIGNED_ATTEMPTS, ALERT_REQUOTES, fitsFeeCap, loopLossBound, cycleLossBound, nextUtcMidnight, planRecovery } from "./cycle.mjs";
+import { CCTP, SEL, MESSAGE_SENT_TOPIC, depositForBurnV2Calldata, receiveMessageCalldata, orbiterMemo, parseMessageV1, parseMessageV2, checkBurnV1, checkBurnV2,
+         messageFromReceipt, waitAttestation, irisMessages, v1NonceKey, packetSeqOf, nobleReceiptOf, checkNobleBurn } from "./cctp.mjs";
+import { STAGES as REAL_STAGES, CCTP_ORDER, SKIP_ORDER, RECOVERY_STARTS } from "./stages.mjs";
 
 const FIX = p => JSON.parse(fs.readFileSync(new URL("../test-fixtures/" + p, import.meta.url), "utf8"));
 let pass = 0, fail = 0;
@@ -392,6 +395,97 @@ const fresh = (amt = "100000000") => ({ cycle: { id: "t", amountIn: amt, idx: 0,
   ok(await h.go(s) === "done", "twelve refusals in a row, then a good quote: the loop completes");
   ok(h.calls.filter(c => c === "A1:send").length === 13 && s.cycle === null, "it kept asking instead of halting");
   ok(alerts.length === 1 && /6 refused quotes in a row/.test(alerts[0]), "and alerted exactly once, at the sixth refusal");
+}
+
+/* ---------- CCTP (the default, self-relayed loop) ----------
+   Fixtures are real mainnet data from 28 Sep 2026 (a Noble orbiter burn toward Avalanche, and an Avalanche CCTP v2 burn
+   toward Injective EVM), with the wallet's addresses replaced by the test mnemonic's. Both were relayed by Skip, so their
+   destinationCaller is Skip's relayer; the bot's own burns name the bot. */
+{
+  const SKIP_RELAYER = P.K.CCTP_V2_RELAYER;
+  ok(SEL.receiveMessage === "57ecfd28" && SEL.depositForBurnV2 === "8e0250ee" && SEL.usedNonces === "feb61724" && SEL.localDomain === "8d3638f4", "selectors are the CCTP ABI's");
+  ok(MESSAGE_SENT_TOPIC === "0x8c5261668696ce22758910d05bab8f186d6eb247ceac2af2e82c7dc17669b036", "MessageSent(bytes) topic");
+
+  // Noble -> Avalanche: the Osmosis tx's packet, the orbiter's receipt of it, and Iris's attested message all agree
+  const osmoTx = FIX("cctp-osmo-a1-tx.json").tx_response, recv = FIX("cctp-noble-orbiter-recv.json").tx_responses, iris1 = FIX("cctp-iris-noble-v1.json").messages[0];
+  ok(packetSeqOf(osmoTx, "channel-750") === "1265664", "the A1 tx's packet sequence on channel-750");
+  const r = nobleReceiptOf(recv, "1265664", "channel-750");
+  ok(r && !r.ackError && r.hash === "155EA3F1D9B5D59CE9AAF45DF88266CB0412B256E68ECE75D94CDAC443981D59", "the Noble tx that acked that packet");
+  ok(nobleReceiptOf(recv, "1265665", "channel-750") === null, "another sequence is not found in the same tx");
+  ok(r.burn.amount === "1999990812" && r.burn.nonce === "372942" && r.burn.depositor === P.K.NOBLE_ORBITER, "the burn event emitted for our packet (Skip's fee taken first)");
+  ok(r.message === iris1.message, "the MessageSent bytes on Noble are the message Iris attests");
+  const exp1 = { amount: "1999990812", destinationDomain: 1, mintRecipient: W.evm, destinationCaller: SKIP_RELAYER };
+  ok(checkNobleBurn(r.burn, exp1).length === 0, "the orbiter's burn event passes against its own fields");
+  ok(checkNobleBurn(r.burn, { ...exp1, destinationCaller: W.evm }).some(e => /destination caller/.test(e)), "a burn anyone else may mint is refused when we asked to mint it ourselves");
+  const m1 = parseMessageV1(iris1.message);
+  ok(m1.sourceDomain === 4 && m1.destinationDomain === 1 && m1.nonce === 372942n && m1.body.amount === 1999990812n, "v1 message decodes like Iris's decodedMessage");
+  const v1exp = { sourceDomain: 4, destinationDomain: 1, recipient: CCTP.TM_V1_AVAX, destinationCaller: SKIP_RELAYER, mintRecipient: W.evm, amount: "1999990812", nonce: "372942" };
+  ok(checkBurnV1(m1, v1exp).length === 0, "the attested v1 burn passes");
+  ok(checkBurnV1(m1, { ...v1exp, amount: "2000000000" }).length === 1 && checkBurnV1(m1, { ...v1exp, mintRecipient: "0x" + "11".repeat(20) }).length === 1, "a wrong amount or recipient is refused");
+  ok(v1NonceKey(4, 372942n) === "0xa280df61e5ea72d0be6975ee1b5d1029bf7e079c82d55032c1e010c9c9df60c0", "v1 used-nonce key (checked against Avalanche: usedNonces returns 1)");
+  // an error ack is a refund, not a burn
+  const bad = JSON.parse(JSON.stringify(recv)); bad[0].events.find(e => e.type === "write_acknowledgement").attributes.find(a => a.key === "packet_ack").value = '{"error":"orbiter: invalid attributes"}';
+  ok(/invalid attributes/.test(nobleReceiptOf(bad, "1265664", "channel-750").ackError), "an error ack is reported as such");
+
+  // the memo the bot sends: the page's orbiter check passes it, it carries no fee, and only the bot may mint
+  const memo = JSON.parse(orbiterMemo(W.evm, 1)), errs = [];
+  P.checkOrbiterMemo(errs, memo, P.K.HUB["43114"], W.evm);
+  ok(errs.length === 0 && !memo.orbiter.pre_actions, "orbiter memo passes the page's check with no fee action");
+  ok(Buffer.from(memo.orbiter.forwarding.attributes.destination_caller, "base64").toString("hex") === P.pad32(W.evm), "destination_caller is the bot");
+
+  // Avalanche -> Injective EVM (v2): the receipt's message (nonce 0) and Iris's (nonce filled) describe the same burn
+  const receipt = FIX("cctp-avax-v2-burn-receipt.json").result, iris2 = FIX("cctp-iris-avax-v2.json").messages[0];
+  const emitted = parseMessageV2(messageFromReceipt(receipt)), attested = parseMessageV2(iris2.message);
+  ok(emitted.nonce === "0x" + "0".repeat(64) && attested.nonce === iris2.eventNonce, "the burn emits a zero nonce; Iris fills it in");
+  ok(attested.sourceDomain === 1 && attested.destinationDomain === 29 && attested.body.amount === 1999990397n && attested.finalityThresholdExecuted === 2000, "v2 message decodes like Iris's decodedMessage");
+  const v2exp = { sourceDomain: 1, destinationDomain: 29, destinationCaller: SKIP_RELAYER, burnToken: P.K.HUB["43114"].usdc, mintRecipient: W.evm, amount: "1999990397", messageSender: P.K.CCTP_V2_ADAPTER };
+  ok(checkBurnV2(attested, v2exp, true).length === 0 && checkBurnV2(emitted, v2exp, false).length === 0, "the v2 burn passes, attested and as emitted");
+  ok(checkBurnV2(attested, { ...v2exp, messageSender: W.evm }).some(e => /burned by/.test(e)), "a burn sent by someone else (here Skip's adapter) is refused when we burned it ourselves");
+
+  // calldata
+  const cd = depositForBurnV2Calldata({ amount: "2000000000", destinationDomain: 29, mintRecipient: W.evm, burnToken: P.K.HUB["43114"].usdc, destinationCaller: W.evm });
+  const w = P.abiWords(cd).w;
+  ok(cd.slice(2, 10) === "8e0250ee" && w.length === 7 && BigInt("0x" + w[0]) === 2000000000n && BigInt("0x" + w[1]) === 29n, "depositForBurn: selector, amount, Injective EVM domain");
+  ok(w[2] === P.pad32(W.evm) && w[3] === P.pad32(P.K.HUB["43114"].usdc) && w[4] === P.pad32(W.evm) && BigInt("0x" + w[5]) === 0n && BigInt("0x" + w[6]) === 2000n, "recipient, token, our own destinationCaller, no fee, standard finality");
+  const rc = receiveMessageCalldata(iris2.message, iris2.attestation), rw = P.abiWords(rc).w, ml = (iris2.message.length - 2) / 2;
+  ok(rc.slice(2, 10) === "57ecfd28" && BigInt("0x" + rw[0]) === 64n && BigInt("0x" + rw[2]) === BigInt(ml), "receiveMessage: two dynamic bytes, message first");
+  ok(rc.includes(iris2.message.slice(2)) && rc.includes(iris2.attestation.slice(2)), "and carries the message and attestation verbatim");
+  ok(BigInt("0x" + rw[1]) === BigInt(64 + 32 + Math.ceil(ml / 32) * 32), "the attestation offset skips the padded message");
+
+  // Iris polling: not indexed (404), then pending, then complete; the message is chosen by nonce
+  const answers = [new Error("404 from https://iris-api.circle.com/v2/messages/4: not found"), { messages: [{ ...iris1, status: "pending_confirmations", attestation: "PENDING" }] },
+    { messages: [{ ...iris1, eventNonce: "1" }, iris1] }];
+  const get = async () => { const a = answers.shift(); if (a instanceof Error) throw a; return a; };
+  const got = await waitAttestation(4, r.hash, m => m.eventNonce === "372942", { get, sleepFn: async () => {}, maxMs: 1e9 });
+  ok(got?.attestation === iris1.attestation && answers.length === 0, "waits through not-indexed and pending, returns the attested message with our nonce");
+  let t = 0; const never = await waitAttestation(4, r.hash, () => true, { get: async () => ({ messages: [] }), sleepFn: async () => { t += 5000; }, now: () => t, maxMs: 20000 });
+  ok(never === null, "gives up after maxMs with nothing attested (the stage then waits, signing nothing)");
+  let asked = ""; await irisMessages(4, "0xabc", async u => { asked = u; return {}; }); ok(/transactionHash=ABC$/.test(asked), "Noble hashes go to Iris uppercase without 0x");
+  await irisMessages(1, "0xAbC", async u => { asked = u; return {}; }); ok(/transactionHash=0xabc$/.test(asked), "EVM hashes keep 0x");
+
+  // the orders, and recovery into each of them
+  ok(CCTP_ORDER.every(k => REAL_STAGES[k]) && SKIP_ORDER.every(k => REAL_STAGES[k]) && REAL_STAGES.C3s && REAL_STAGES.N0, "every stage of both orders exists");
+  const z = { noble: 0n, avaxUsdc: 0n, injUsdc: 0n, injOnOsmo: 0n };
+  const ci = planRecovery({ ...z, injUsdc: 5000000n }, 1000000n, CCTP_ORDER, 0, RECOVERY_STARTS.cctp), ca = planRecovery({ ...z, avaxUsdc: 5000000n }, 1000000n, CCTP_ORDER, 0, RECOVERY_STARTS.cctp);
+  ok(ci.order[ci.idx] === "C3" && ci.stages.C2m.received === "5000000" && ca.order[ca.idx] === "C2" && ca.stages.C1m.received === "5000000", "CCTP recoveries resume at C3 (Injective) and C2 (Avalanche)");
+  const co = planRecovery({ ...z, injOnOsmo: 5000000n }, 1000000n, CCTP_ORDER, 0, RECOVERY_STARTS.cctp);
+  ok(co.order.join() === "C3s" && co.recovery === "USDC.inj on Osmosis", "USDC.inj left on Osmosis is one 1:1 swap");
+  ok(loopLossBound("100000000", 5, CCTP_ORDER) === 50000n && cycleLossBound(ca, ca.order, 5) === 2500n, "the CCTP loop's legs are exact: only the bps margin is reserved");
+}
+{
+  // the runner hands a stage's `carry` to the next one, and an arrivalFailed stage is judged by its refund
+  const seen = [], mk = key => ({ title: key, async state() { return "exists"; }, async rebroadcast() {},
+    async send(ctx, st, note, onSigned) { seen.push(`${key}:${st.carry?.tx || "-"}`); await onSigned({ hash: key, feeAllUSDC: "0" }); },
+    async arrive(ctx, st) { st.carry = { tx: key + "-burn" }; return st.amountIn; }, async refunded() { return false; } });
+  const run = makeRunner({ STAGES: { X: mk("X"), Y: mk("Y") }, ORDER: ["X", "Y"], saveState: () => {}, log: () => {}, addFee: () => {}, retryMs: 0, refundRetryMs: 0 });
+  const s = { cycle: { id: "c", amountIn: "5", idx: 0, order: ["X", "Y"], stages: {} } };
+  ok(await run({ cfg: { max_loop_loss_bps: 5 }, capMicro: 5000000n }, s) === "done" && seen.join() === "X:-,Y:X-burn", "the mint stage sees the burn stage's carry");
+  let n = 0;
+  const F = { title: "F", async state() { return "exists"; }, async rebroadcast() {}, async send(ctx, st, note, onSigned) { await onSigned({ hash: "F" + n, feeAllUSDC: "0" }); },
+    async arrive() { if (n++ === 0) throw Object.assign(new Error("Noble acknowledged packet 7 with an error"), { arrivalFailed: true }); return "5"; }, async refunded() { return true; } };
+  const run2 = makeRunner({ STAGES: { F }, ORDER: ["F"], saveState: () => {}, log: () => {}, addFee: () => {}, retryMs: 0, refundRetryMs: 0 });
+  const s2 = { cycle: { id: "f", amountIn: "5", idx: 0, order: ["F"], stages: {} } };
+  ok(await run2({ cfg: { max_loop_loss_bps: 5 }, capMicro: 5000000n }, s2) === "done" && s2.history.at(-1).back === "5", "an arrivalFailed stage with a proven refund is sent again and completes");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

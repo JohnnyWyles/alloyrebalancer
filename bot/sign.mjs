@@ -179,7 +179,7 @@ export async function evmSend(chainId, wallet, { to, data, value }, note, onSign
   const gas = BigInt(await rpc(chainId, "eth_estimateGas", [call])) * 13n / 10n;
   // gas is only refilled between loops; running short mid-loop must stop loudly here, not spin on node refusals
   const have = BigInt(await rpc(chainId, "eth_getBalance", [k.addr, "latest"])), worst = gas * maxFee + BigInt(value || 0);
-  if (have < worst) throw Object.assign(new Error(`${K.EVM[chainId]?.sym || chainId} balance ${Number(have) / 1e18} cannot cover this tx's worst-case ${Number(worst) / 1e18} (gas ${gas} at ${Number(maxFee) / 1e9} gwei). Send ${K.EVM[chainId]?.sym || "gas"} to ${k.addr}, then delete HALTED; the stage resumes where it is.`), { halt: true, nothingSent: true, gasShort: chainId === "43114" ? "avax" : null });
+  if (have < worst) throw Object.assign(new Error(`${K.EVM[chainId]?.sym || chainId} balance ${Number(have) / 1e18} cannot cover this tx's worst-case ${Number(worst) / 1e18} (gas ${gas} at ${Number(maxFee) / 1e9} gwei). Send ${K.EVM[chainId]?.sym || "gas"} to ${k.addr}, then delete HALTED; the stage resumes where it is.`), { halt: true, nothingSent: true, gasShort: chainId === "43114" ? "avax" : chainId === K.INJ_EVM_CHAIN ? "inj" : null });   // Injective EVM gas is the same INJ balance
   const { raw, hash } = signEip1559(k.priv, { chainId: BigInt(chainId), nonce, maxPriorityFeePerGas: prio, maxFeePerGas: maxFee, gas, to, value: value || 0, data });
   if (opts.dryRun) { note(`dry run: would send ${hash} to ${to} (gas ${gas})`); return { hash, dryRun: true }; }
   await onSigned({ hash, raw, nonce: nonce.toString(), chain: chainId });

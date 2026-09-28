@@ -87,12 +87,12 @@ export async function headroom(denom, direction, channel, reservePct = 0) {
 
 /* ---------------- balances ---------------- */
 export async function balances(W) {
-  const [all, noble, avaxUsdc, avax, inj, injUsdc] = await Promise.all([
-    bankBalance("osmosis-1", W.osmo, K.ALL), bankBalance("osmosis-1", W.osmo, K.NOBLE),
+  const [all, noble, injOnOsmo, avaxUsdc, avax, inj, injUsdc] = await Promise.all([
+    bankBalance("osmosis-1", W.osmo, K.ALL), bankBalance("osmosis-1", W.osmo, K.NOBLE), bankBalance("osmosis-1", W.osmo, K.INJ_IBC),
     erc20BalanceOf("43114", K.HUB["43114"].usdc, W.evm), evmNative("43114", W.evm),
     bankBalance("injective-1", W.inj, "inj"), bankBalance("injective-1", W.inj, K.INJ_ERC20),
   ]);
-  return { all, noble, avaxUsdc, avax, inj, injUsdc };
+  return { all, noble, injOnOsmo, avaxUsdc, avax, inj, injUsdc };
 }
 
 /* ---------------- gas refill: the page's Fund Gas route (allUSDC -> native gas, delivered to the bot's own address) ----------------

@@ -19,15 +19,37 @@ same amount back in as USDC.inj. Its own allUSDC balance stays the same apart fr
 
 ## One loop
 
+By default the bot builds every message itself and relays both CCTP bridges on its own, with no Skip in the path:
+
+| Stage | Chain | What happens |
+| --- | --- | --- |
+| C1 | Osmosis | swap allUSDC -> USDC.noble on pool 3497 at exactly 1:1, IBC to Noble's orbiter, which burns it via CCTP v1 toward Avalanche (one tx) |
+| C1m | Avalanche | once Circle attests the burn, mint it with `MessageTransmitter.receiveMessage` |
+| C2 | Avalanche | exact-amount USDC approval, then `TokenMessengerV2.depositForBurn` toward Injective EVM (standard finality, no fee) |
+| C2m | Injective EVM | once attested, mint it with `MessageTransmitterV2.receiveMessage` |
+| C3 | Injective | IBC the USDC.inj to the bot's own Osmosis address, no memo |
+| C3s | Osmosis | swap USDC.inj -> allUSDC on pool 3497 at exactly 1:1 |
+
+Both burns name the bot's own EVM address as `destinationCaller`, so only the bot can mint them. Before a mint is
+submitted, the message Circle attested is decoded and checked field by field: domains, the TokenMessengers, the mint
+recipient, the amount, the burn token, no fee and no hook. The pinned Circle contracts are checked onchain once per
+start (each MessageTransmitter's `localDomain`, each TokenMessengerV2's transmitter), and a mismatch halts.
+
+`--skip` (added to `ExecStart` in `alloybot.service`) starts new loops through Skip's routes instead, as the bot ran
+until 2026-09-28:
+
 | Stage | Chain | What happens |
 | --- | --- | --- |
 | A1 | Osmosis | swap allUSDC -> USDC.noble on pool 3497 at exactly 1:1, IBC to Noble, CCTP v1 to Avalanche (one tx) |
 | A2 | Avalanche | exact-amount USDC approval, then Skip's CCTP v2 burn to Injective |
 | A3 | Injective | IBC to Osmosis with an ibc-hooks swap into allUSDC on pool 3497, minimum raised to the full amount |
 
-Each stage's input is the amount that verifiably arrived from the previous one. Every Skip response is checked by the
-page's own route validators before anything is signed; the bot loads them, and the pinned contract addresses, straight
-out of `../index.html`, so there is one copy of those rules.
+In that mode every Skip response is checked by the page's own route validators before anything is signed; the bot
+loads them, and the pinned contract addresses, straight out of `../index.html`, so there is one copy of those rules.
+
+Every cycle records which stages it runs, so a loop in flight always finishes in the implementation it started with.
+A loop that has not signed its first stage yet (for example, one parked on Skip's `no routes found`) is switched to the
+implementation the process runs. Each stage's input is the amount that verifiably arrived from the previous one.
 
 A loop starts only when all of these hold:
 
@@ -40,8 +62,10 @@ Once the pool is back at target the bot idles, and it starts again by itself if 
 
 ## Measured results
 
-The first ten live loops on 2026-09-24, 100 USDC each, reconstructed from onchain data (the wallet's allUSDC balance
-reconciles to the unit).
+The first ten live loops on 2026-09-24, 100 USDC each, through Skip (`--skip` today), reconstructed from onchain data
+(the wallet's allUSDC balance reconciles to the unit). The CCTP loop drops the Skip relay fees below and instead pays
+two more Avalanche transactions (the v1 mint, about 0.0006 AVAX at a 5 gwei base fee), negligible Injective EVM gas,
+and one more Osmosis fee for the final swap.
 
 **Time.** Median 167 s from the A1 transaction to allUSDC back on Osmosis (average 182 s), plus about 20 s before the
 next loop starts: about 17 loops an hour.
@@ -70,20 +94,23 @@ in dollars and less per dollar moved.
 
 ## How it stays safe
 
-- **Nothing is signed that the page would refuse.** Every route goes through the page's validators: pinned contracts,
-  pinned CCTP adapters and relayers, recipients that are the bot's own addresses, bounded fees, exact amounts.
+- **Nothing is signed that the page would refuse.** In `--skip` mode every route goes through the page's validators:
+  pinned contracts, pinned CCTP adapters and relayers, recipients that are the bot's own addresses, bounded fees, exact
+  amounts. In CCTP mode the bot builds each message from pinned constants, checks the orbiter memo with the page's
+  orbiter check, and checks every burn event and attested message against what it asked for before minting.
 - **No double signing.** Every signed transaction is written to a durable journal (fsynced, with its raw bytes and
   timeout height or nonce) before it is broadcast. A recorded transaction is only forgotten when the chain proves it
   can never move funds: included with an error, past its timeout height, its nonce used by another transaction, or
   refused by the node for a deterministic validation reason. An unclear send (a timeout, a dropped connection, a
   provider error) keeps the record, and the next check resolves it by hash; a restart resumes where it was.
 - **A retry needs proof.** A stage whose transaction landed is signed again only when its funds are provably back
-  where the stage started (an A3 refund on Injective), at most three signatures per stage.
+  where the stage started (an A3 or C3 refund on Injective, a refunded IBC hop to Noble), at most three signatures per
+  stage. A mint whose nonce is already used is never sent again: only the bot can mint its burns, so it was minted.
 - **Exact swaps.** Both pool 3497 swaps require the full amount out; a short fill reverts instead of landing short.
-- **Stray funds are brought home.** USDC.inj on Injective, USDC on Avalanche or USDC.noble on Osmosis found with no
-  loop in flight is first read again a minute later (a public endpoint a few blocks behind can still show what the
-  last stage just sent), and then recovered by the part of the loop that starts where it is: A3 alone, A2 then A3, or
-  a single 1:1 USDC.noble -> allUSDC swap on pool 3497. A refunded IBC hop in A1 is resent from the refunded
+- **Stray funds are brought home.** USDC.inj on Injective, USDC on Avalanche, or USDC.noble or USDC.inj on Osmosis found
+  with no loop in flight is first read again a minute later (a public endpoint a few blocks behind can still show what
+  the last stage just sent), and then recovered by the part of the loop that starts where it is: C3 onward (A3), C2
+  onward (A2 then A3), or a single 1:1 swap into allUSDC on pool 3497. A refunded IBC hop in A1 or C1 is resent from the refunded
   USDC.noble without swapping more. Recovery uses the same validators, journal and fee rules as a loop, runs even
   when the pool is at target, and does not count as a loop. `auto_recover: false` halts instead.
 - **Waits instead of halting when time fixes it.** A transfer that has not arrived after its 30-minute window keeps
@@ -203,9 +230,10 @@ reserve_usdc)`, so with 105 the first loop carries about 99.
 alloybotctl once --dry-run
 ```
 
-This reads everything, builds and simulates the gas refills and the A1 transaction, fetches the A2 and A3 routes for
-the same amount and runs them through the validators, and broadcasts nothing. Expect `dry run: would broadcast ...`,
-`[dry A2] route ok` and `[dry A3] route ok (min_asset raised to the full amount)`.
+This reads everything, builds and simulates the gas refills and the C1 transaction, checks the pinned Circle contracts
+onchain, and prints the C2 burn call it would make; it broadcasts nothing. Expect `dry run: would broadcast ...` and
+`[dry] CCTP contracts check out`. With `--skip` it builds and simulates A1 and runs the A2 and A3 routes through the
+validators instead (`[dry A2] route ok`, `[dry A3] route ok (min_asset raised to the full amount)`).
 
 ### 7. Start
 
@@ -251,8 +279,16 @@ loop without a restart.
 
 Halts you might see:
 
-- **... lost X allUSDC, Y more than Skip quoted**: a loop came back short by more than its quotes explain. Compare the
-  stage amounts in `/var/lib/alloybot/state.json` history and the transactions before deleting `HALTED`.
+- **... lost X allUSDC, Y more than Skip quoted**: a loop came back short by more than its quotes explain (in CCTP mode
+  every leg is quoted at exactly 1:1). Compare the stage amounts in `/var/lib/alloybot/state.json` history and the
+  transactions before deleting `HALTED`.
+- **attested message refused / ... is not what C1 asked for**: a burn or Circle's message for it did not match what
+  the bot sent. Nothing was minted. Read the fields in the reason against the burn transaction before resuming.
+- **Circle has not attested ... yet** (a wait, not a halt): the mint stage checks again every minute. A burn that stays
+  unattested for long means Circle's attestation service is behind; the funds are in CCTP, the journal keeps the burn,
+  and the mint is sent as soon as the attestation exists. To mint by hand, fetch `message` and `attestation` from
+  `https://iris-api.circle.com/v2/messages/<source domain>?transactionHash=<burn tx>` and call `receiveMessage` from the
+  bot's own address (it is the only allowed caller).
 - **... was signed 3 times without success**: three attempts at one stage each failed without moving funds, which
   points at something systematic (fees, account state). The reasons are in `journalctl`.
 - **... with no loop in flight, and auto_recover is off**: funds are outside the alloy and automatic recovery is
@@ -295,7 +331,8 @@ are sent there.
 | `max_gas_refills_per_day` | 4 | needing more waits for 00:00 UTC, with one alert |
 | `gas_refill_usdc` | avax 2, inj 1 | allUSDC per refill (at most 10) |
 | `gas_min_value_pct` | 80 | a refill must deliver at least this % of its cost in gas, otherwise it waits |
-| `avax_max_fee_gwei` | 50 | above this the A2 send waits instead of paying |
+| `avax_max_fee_gwei` | 50 | above this an Avalanche send (C1m, C2, or A2) waits instead of paying |
+| `inj_evm_max_fee_gwei` | 5 | the same for the Injective EVM mint (C2m); the chain's base fee is a fixed 0.16 gwei |
 | `osmo_fee_margin` | 2 | Osmosis fee over the base fee, converted at the fee pool's spot price |
 | `rate_limit_margin_pct` | 1 | % of each IBC rate-limit quota cap left free for other users; the bot only uses the rest |
 | `stranded_threshold_usdc` | 1 | funds outside the alloy above this, with no loop in flight, are recovered |
@@ -308,11 +345,12 @@ are sent there.
 | --- | --- |
 | `bot.mjs` | commands (`run`, `once`, `status`, `addresses`, `keygen`), decision loop, config, journal |
 | `cycle.mjs` | the resumable loop runner (resume, retry, re-quote, fee ceiling and halt rules) and recovery planning |
-| `stages.mjs` | A1, A2, A3, and N0 (the USDC.noble recovery swap) |
+| `stages.mjs` | the CCTP stages C1 to C3s, the Skip stages A1 to A3, and N0 (the USDC.noble recovery swap) |
+| `cctp.mjs` | pinned Circle contracts, calldata, CCTP message decoding and checks, Iris attestations, the Noble burn lookup |
 | `chain.mjs` | pool reads, IBC rate-limit headroom, balances, gas refills |
 | `sign.mjs` | key derivation, Cosmos sign-direct (secp256k1; ethsecp256k1 for Injective), EIP-1559, send classification |
 | `page.mjs`, `extract.mjs` | load constants, encoders, validators and network helpers from `../index.html` |
-| `test.mjs` | signing against cosmjs and ethers reference output, decision and fee-cap math, rate-limit sizing, runner rules |
+| `test.mjs` | signing against cosmjs and ethers reference output, decision and fee-cap math, rate-limit sizing, runner rules, CCTP messages and calldata against real mainnet burns |
 | `alloybot.service`, `alloybotctl` | systemd unit (hardened, `LoadCredential` for the mnemonic) and a wrapper that runs one command the same way |
 | `config.example.json` | first-run config |
 

@@ -32,7 +32,7 @@ export function cycleLossBound(c, order, bps) {
   const a = BigInt(c.amountIn);
   return order.slice(c.startIdx || 0).reduce((t, k) => t + stageLossBound(k, a), 0n) + a * BigInt(bps) / 10000n;
 }
-export const loopLossBound = (amountIn, bps) => cycleLossBound({ amountIn }, ["A1", "A2", "A3"], bps);
+export const loopLossBound = (amountIn, bps, order = ["A1", "A2", "A3"]) => cycleLossBound({ amountIn }, order, bps);
 /* what Skip quoted the loop would lose: each stage's amount in minus the amount its quote promised */
 export const quotedLoss = (c, order) => order.reduce((t, k) => { const st = c.stages[k]; return t + (st?.expected ? BigInt(st.amountIn) - BigInt(st.expected) : 0n); }, 0n);
 /* lossMicro overrides the full-loop bound (recoveries, cycles already in flight) */
@@ -43,14 +43,20 @@ export const nextUtcMidnight = (now = Date.now()) => { const d = new Date(now); 
 
 /* Funds found outside the alloy with no loop in flight are brought home by the part of the loop that starts where they
    are, so recovery uses the same stages, validators and journal as a loop. Closest to home first, one at a time.
-   Returns the cycle to run, or null. `b` holds the balances in base units. */
-export function planRecovery(b, strandMicro, ORDER, now = Date.now()) {
+   Returns the cycle to run, or null. `b` holds the balances in base units; `starts` names the stage of ORDER that picks
+   up USDC on Avalanche and USDC.inj on Injective. USDC.inj or USDC.noble found on Osmosis is one 1:1 swap (C3s, N0). */
+export function planRecovery(b, strandMicro, ORDER, now = Date.now(), starts = { avaxUsdc: "A2", injUsdc: "A3" }) {
   const id = "recover-" + new Date(now).toISOString().replace(/[-:]/g, "").slice(0, 15);
-  const at = (idx, prevKey, amt, what) => ({ id, recovery: what, amountIn: amt.toString(), idx, startIdx: idx, order: ORDER,
-    stages: { [prevKey]: { amountIn: amt.toString(), received: amt.toString(), signed: 0, recovered: true } } });
-  if (b.injUsdc >= strandMicro) return at(2, ORDER[1], b.injUsdc, "USDC.inj on Injective");
-  if (b.avaxUsdc >= strandMicro) return at(1, ORDER[0], b.avaxUsdc, "USDC on Avalanche");
-  if (b.noble >= strandMicro) return { id, recovery: "USDC.noble on Osmosis", amountIn: b.noble.toString(), idx: 0, order: ["N0"], stages: {} };
+  const at = (key, amt, what) => {
+    const idx = ORDER.indexOf(key); if (idx < 1) throw new Error(`recovery start ${key} is not a later stage of ${ORDER.join(",")}`);
+    return { id, recovery: what, amountIn: amt.toString(), idx, startIdx: idx, order: ORDER,
+      stages: { [ORDER[idx - 1]]: { amountIn: amt.toString(), received: amt.toString(), signed: 0, recovered: true } } };
+  };
+  const swap = (key, amt, what) => ({ id, recovery: what, amountIn: amt.toString(), idx: 0, order: [key], stages: {} });
+  if (b.injUsdc >= strandMicro) return at(starts.injUsdc, b.injUsdc, "USDC.inj on Injective");
+  if (b.avaxUsdc >= strandMicro) return at(starts.avaxUsdc, b.avaxUsdc, "USDC on Avalanche");
+  if ((b.injOnOsmo ?? 0n) >= strandMicro) return swap("C3s", b.injOnOsmo, "USDC.inj on Osmosis");
+  if (b.noble >= strandMicro) return swap("N0", b.noble, "USDC.noble on Osmosis");
   return null;
 }
 
@@ -59,7 +65,9 @@ export function makeRunner({ STAGES, ORDER, saveState, log, addFee, notify = asy
   const c = s.cycle, order = c.order || ORDER;   // a recovery cycle carries its own (partial) stage order
   for (; c.idx < order.length; c.idx++) {
     const key = order[c.idx], S = STAGES[key];
-    const st = c.stages[key] ||= { amountIn: c.idx === 0 ? c.amountIn : c.stages[order[c.idx - 1]].received, signed: 0 };
+    // a stage can hand what the next one needs (a burn's tx hash and nonce for the mint that follows) through `carry`
+    const prev = c.idx > 0 ? c.stages[order[c.idx - 1]] : null;
+    const st = c.stages[key] ||= { amountIn: c.idx === 0 ? c.amountIn : prev.received, signed: 0, ...(prev?.carry ? { carry: prev.carry } : {}) };
     const note = m => log(`[${c.id} ${key}]`, m);
     const save = () => saveState(s);
     for (;;) {
@@ -113,9 +121,10 @@ export function makeRunner({ STAGES, ORDER, saveState, log, addFee, notify = asy
         st.received = await S.arrive(ctx, st, note);
         note(`received ${fmtUnits(st.received)}`); save(); break;
       } catch (e) {
-        // only a definitive outcome is judged here: the arrival window ran out, or Skip reports a terminal error. A failed
+        // only a definitive outcome is judged here: the arrival window ran out, Skip reports a terminal error, or the stage
+        // says it failed (arrivalFailed: e.g. Noble acked the packet with an error). A failed
         // read (LCD or RPC blip) is transient; the tx stays journaled and the next tick waits again without signing.
-        if (!ARRIVAL_FAILED.test(e.message)) throw e;
+        if (!e.arrivalFailed && !ARRIVAL_FAILED.test(e.message)) throw e;
         if (await S.refunded(ctx, st).catch(() => false)) {
           note(`refunded to the stage's source (${e.message}); retrying in 5 minutes`);
           st.tx = undefined; st.refunds = (st.refunds || 0) + 1; st.retryAfter = Date.now() + refundRetryMs; save(); continue;
