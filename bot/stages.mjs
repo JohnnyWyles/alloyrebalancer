@@ -342,8 +342,8 @@ export const STAGES = {
       if (bal < BigInt(amountIn)) throw halt(`Avalanche USDC balance ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this stage expects`);
       Object.assign(st, { expected: amountIn });
       const eo = evmOpts(ctx, AVAX), have = await erc20Allowance(AVAX, H.usdc, ctx.W.evm, CCTP.TM_V2);
-      for (const amt of approvalPlan(have, amountIn)) {
-        note(`approving exactly ${fmtUnits(amt)} USDC to TokenMessengerV2`);
+      for (const amt of cctpApprovalPlan(have, amountIn, ctx.cfg.cctp_approval_usdc)) {
+        note(`approving ${fmtUnits(amt)} USDC to TokenMessengerV2`);
         await evmSend(AVAX, ctx.wallet, { to: H.usdc, data: approveCalldata(CCTP.TM_V2, amt), value: 0 }, note, async () => {}, eo);   // an approval moves nothing
       }
       note(`CCTP v2 burn of ${fmtUnits(amountIn)} USDC to ${ctx.W.injHex} on Injective EVM (standard finality, no fee)`);
@@ -431,6 +431,17 @@ export const CCTP_ORDER = ["C1", "C1m", "C2", "C2m", "C3", "C3s"];
 export const ORDER = SKIP_ORDER;
 /* where each order picks up funds found outside the alloy (see cycle.mjs planRecovery) */
 export const RECOVERY_STARTS = { skip: { avaxUsdc: "A2", injUsdc: "A3" }, cctp: { avaxUsdc: "C2", injUsdc: "C3" } };
+
+/* C2's approval to TokenMessengerV2. depositForBurn only pulls from its caller, so the allowance can only be spent by
+   the bot's own burns, and the bot's Avalanche USDC is at most one loop in transit. A standing allowance of
+   `approvalUsdc` therefore saves an approval per loop at no added exposure; 0 approves exactly each loop's amount.
+   Avalanche USDC (FiatToken) accepts a new nonzero allowance over an old one, so no reset to 0 is needed. */
+export function cctpApprovalPlan(have, need, approvalUsdc = 0) {
+  have = BigInt(have); need = BigInt(need);
+  if (have >= need) return [];
+  const standing = BigInt(Math.round(Number(approvalUsdc || 0) * 1e6));
+  return [(standing > need ? standing : need).toString()];
+}
 
 /* The transmuter is 1:1 with no fee, so the hook swap's minimum is raised to the full amount: a short fill reverts
    the swap, the packet is acked with an error and USDC.inj is refunded, instead of the loop landing short. */

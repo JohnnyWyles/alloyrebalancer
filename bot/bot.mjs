@@ -53,6 +53,7 @@ const DEFAULTS = {
   gas_min_value_pct: 80,     // a refill quote must deliver at least this % of its allUSDC in gas
   avax_max_fee_gwei: 50,
   inj_evm_max_fee_gwei: 5,   // Injective EVM mint (C2m); its base fee is the chain's fixed 0.16 gwei
+  cctp_approval_usdc: 1000000,   // standing USDC allowance for TokenMessengerV2 on Avalanche (C2); 0 approves each loop exactly
   osmo_fee_margin: 2,       // Osmosis fee (in allUSDC) over the base fee at the fee pool's spot price
   rate_limit_margin_pct: 1,  // % of each rate-limit quota cap left free for other users
   stranded_threshold_usdc: 1,
@@ -72,6 +73,7 @@ function loadConfig(required) {
   if (!(cfg.gas_min_value_pct >= 50 && cfg.gas_min_value_pct <= 100)) throw new Error("gas_min_value_pct must be in [50, 100]");
   if (!(cfg.target_inj_pct > 0 && cfg.target_inj_pct <= 100)) throw new Error("target_inj_pct must be in (0, 100]");
   if (!(cfg.loop_usdc >= cfg.min_loop_usdc && cfg.min_loop_usdc > 0)) throw new Error("need loop_usdc >= min_loop_usdc > 0");
+  if (!(cfg.cctp_approval_usdc >= 0 && cfg.cctp_approval_usdc <= 1e9)) throw new Error("cctp_approval_usdc must be in [0, 1e9]");
   return cfg;
 }
 const usdc = n => BigInt(Math.round(Number(n) * 1e6));

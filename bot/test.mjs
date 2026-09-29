@@ -15,7 +15,7 @@ import { tightenMinAsset, watchArrival } from "./stages.mjs";
 import { makeRunner, MAX_SIGNED_ATTEMPTS, ALERT_REQUOTES, fitsFeeCap, loopLossBound, cycleLossBound, nextUtcMidnight, planRecovery } from "./cycle.mjs";
 import { CCTP, SEL, MESSAGE_SENT_TOPIC, depositForBurnV2Calldata, receiveMessageCalldata, orbiterMemo, parseMessageV1, parseMessageV2, checkBurnV1, checkBurnV2,
          messageFromReceipt, waitAttestation, irisMessages, v1NonceKey, packetSeqOf, nobleReceiptOf, checkNobleBurn } from "./cctp.mjs";
-import { STAGES as REAL_STAGES, CCTP_ORDER, SKIP_ORDER, RECOVERY_STARTS } from "./stages.mjs";
+import { STAGES as REAL_STAGES, CCTP_ORDER, SKIP_ORDER, RECOVERY_STARTS, cctpApprovalPlan } from "./stages.mjs";
 
 const FIX = p => JSON.parse(fs.readFileSync(new URL("../test-fixtures/" + p, import.meta.url), "utf8"));
 let pass = 0, fail = 0;
@@ -470,6 +470,11 @@ const fresh = (amt = "100000000") => ({ cycle: { id: "t", amountIn: amt, idx: 0,
   ok(ci.order[ci.idx] === "C3" && ci.stages.C2m.received === "5000000" && ca.order[ca.idx] === "C2" && ca.stages.C1m.received === "5000000", "CCTP recoveries resume at C3 (Injective) and C2 (Avalanche)");
   const co = planRecovery({ ...z, injOnOsmo: 5000000n }, 1000000n, CCTP_ORDER, 0, RECOVERY_STARTS.cctp);
   ok(co.order.join() === "C3s" && co.recovery === "USDC.inj on Osmosis", "USDC.inj left on Osmosis is one 1:1 swap");
+  // C2's approval: a standing allowance is set once and reused; 0 keeps the exact per-loop approval
+  ok(cctpApprovalPlan(0n, "2000000000", 1000000).join() === "1000000000000", "no allowance: approve the standing 1,000,000 once");
+  ok(cctpApprovalPlan(999000000000n, "2000000000", 1000000).length === 0, "enough left for this loop: no approval");
+  ok(cctpApprovalPlan(1000000000n, "2000000000", 1000000).join() === "1000000000000", "run down below one loop: top up in one tx, no reset to 0");
+  ok(cctpApprovalPlan(0n, "2000000000", 0).join() === "2000000000" && cctpApprovalPlan(0n, "2000000000", 1000).join() === "2000000000", "0, or a standing amount below the loop, approves exactly the loop");
   ok(loopLossBound("100000000", 5, CCTP_ORDER) === 50000n && cycleLossBound(ca, ca.order, 5) === 2500n, "the CCTP loop's legs are exact: only the bps margin is reserved");
 }
 {

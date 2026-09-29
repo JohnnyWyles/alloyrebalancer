@@ -25,11 +25,13 @@ By default the bot builds every message itself and relays both CCTP bridges on i
 | --- | --- | --- |
 | C1 | Osmosis | swap allUSDC -> USDC.noble on pool 3497 at exactly 1:1, IBC to Noble's orbiter, which burns it via CCTP v1 toward Avalanche (one tx) |
 | C1m | Avalanche | once Circle attests the burn, mint it with `MessageTransmitter.receiveMessage` |
-| C2 | Avalanche | exact-amount USDC approval, then `TokenMessengerV2.depositForBurn` toward Injective EVM (standard finality, no fee) |
+| C2 | Avalanche | `TokenMessengerV2.depositForBurn` toward Injective EVM (standard finality, no fee), approving a standing allowance first when the last one has run low |
 | C2m | Injective EVM | once attested, mint it with `MessageTransmitterV2.receiveMessage` |
 | C3 | Injective | IBC the USDC.inj to the bot's own Osmosis address, no memo |
 | C3s | Osmosis | swap USDC.inj -> allUSDC on pool 3497 at exactly 1:1 |
 
+The standing allowance (`cctp_approval_usdc`) adds no exposure: `depositForBurn` only pulls from its own caller, so
+only the bot's burns can spend it, and the bot holds USDC on Avalanche only while a loop is between C1m and C2.
 Both burns name the bot's own EVM address as `destinationCaller`, so only the bot can mint them. Before a mint is
 submitted, the message Circle attested is decoded and checked field by field: domains, the TokenMessengers, the mint
 recipient, the amount, the burn token, no fee and no hook. The pinned Circle contracts are checked onchain once per
@@ -333,6 +335,7 @@ are sent there.
 | `gas_min_value_pct` | 80 | a refill must deliver at least this % of its cost in gas, otherwise it waits |
 | `avax_max_fee_gwei` | 50 | above this an Avalanche send (C1m, C2, or A2) waits instead of paying |
 | `inj_evm_max_fee_gwei` | 5 | the same for the Injective EVM mint (C2m); the chain's base fee is a fixed 0.16 gwei |
+| `cctp_approval_usdc` | 1000000 | standing USDC allowance C2 gives TokenMessengerV2 on Avalanche, topped up when it runs below a loop; saves an approval (about 55k gas) per loop. 0 approves exactly each loop's amount |
 | `osmo_fee_margin` | 2 | Osmosis fee over the base fee, converted at the fee pool's spot price |
 | `rate_limit_margin_pct` | 1 | % of each IBC rate-limit quota cap left free for other users; the bot only uses the rest |
 | `stranded_threshold_usdc` | 1 | funds outside the alloy above this, with no loop in flight, are recovered |
