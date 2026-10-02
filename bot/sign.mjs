@@ -165,6 +165,8 @@ export function signEip1559(priv, tx) {
   return { raw: "0x" + hex(signed), hash: "0x" + hex(keccak_256(signed)) };
 }
 
+export const gweiStr = wei => { const s = (wei % 1000000000n).toString().padStart(9, "0").replace(/0+$/, ""); return `${wei / 1000000000n}${s ? "." + s : ""}`; };
+
 /* Sends one EVM tx from the bot's 0x address and waits for a successful receipt. The fee cap is a hard ceiling:
    above it the send is refused (nothing signed), not raised. */
 export async function evmSend(chainId, wallet, { to, data, value }, note, onSigned, opts = {}) {
@@ -174,7 +176,8 @@ export async function evmSend(chainId, wallet, { to, data, value }, note, onSign
   const base = BigInt(block.baseFeePerGas);
   let prio; try { prio = BigInt(await rpc(chainId, "eth_maxPriorityFeePerGas", [])); } catch { prio = 1000000000n; }
   const maxFee = base * 2n + prio, cap = BigInt(Math.round((opts.maxFeeGwei || 50) * 1e9));
-  if (maxFee > cap) throw Object.assign(new Error(`${chainId} max fee ${maxFee / 1000000000n} gwei is above the ${opts.maxFeeGwei || 50} gwei cap; waiting`), { nothingSent: true, waitRetry: true });
+  // full precision: at base 5 the max fee is 10.00000015, which rounds to "10" and reads as equal to a 10 cap
+  if (maxFee > cap) throw Object.assign(new Error(`${chainId} max fee ${gweiStr(maxFee)} gwei is above the ${opts.maxFeeGwei || 50} gwei cap; waiting`), { nothingSent: true, waitRetry: true });
   const call = { from: k.addr, to, data, value: "0x" + BigInt(value || 0).toString(16) };
   const gas = BigInt(await rpc(chainId, "eth_estimateGas", [call])) * 13n / 10n;
   // gas is only refilled between loops; running short mid-loop must stop loudly here, not spin on node refusals

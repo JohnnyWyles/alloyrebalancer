@@ -9,7 +9,7 @@
  */
 import fs from "node:fs";
 import { P } from "./page.mjs";
-import { deriveWallet, SignDoc, signCosmosBytes, signEip1559, rlp, sendRawEvm } from "./sign.mjs";
+import { deriveWallet, SignDoc, signCosmosBytes, signEip1559, rlp, sendRawEvm, gweiStr } from "./sign.mjs";
 import { deficit, sharePct, quotaRoom, gasSpec } from "./chain.mjs";
 import { tightenMinAsset, watchArrival } from "./stages.mjs";
 import { makeRunner, MAX_SIGNED_ATTEMPTS, ALERT_REQUOTES, fitsFeeCap, loopLossBound, cycleLossBound, nextUtcMidnight, planRecovery } from "./cycle.mjs";
@@ -57,6 +57,7 @@ ok(hex(key("injective-1").pub) === G.injPub, "injective compressed pubkey == eth
   void t0;
   ok(hex(rlp(new Uint8Array(0))) === "80" && hex(rlp(Uint8Array.of(0x7f))) === "7f" && hex(rlp([])) === "c0", "rlp edge cases");
   ok(hex(rlp(new Uint8Array(56).fill(1))).startsWith("b838"), "rlp long string length prefix");
+  ok(gweiStr(10000000150n) === "10.00000015" && gweiStr(10000000000n) === "10" && gweiStr(5500000000n) === "5.5" && gweiStr(160000000n) === "0.16", "gweiStr keeps sub-gwei precision and trims zeros");
 }
 let bad = false; try { deriveWallet("test test test"); } catch { bad = true; }
 ok(bad, "invalid mnemonic refused");
