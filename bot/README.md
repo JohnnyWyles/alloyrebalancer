@@ -111,7 +111,9 @@ in dollars and less per dollar moved.
 - **Exact swaps.** Both pool 3497 swaps require the full amount out; a short fill reverts instead of landing short.
 - **Stray funds are brought home.** USDC.inj on Injective, USDC on Avalanche, or USDC.noble or USDC.inj on Osmosis found
   with no loop in flight is first read again a minute later (a public endpoint a few blocks behind can still show what
-  the last stage just sent), and then recovered by the part of the loop that starts where it is: C3 onward (A3), C2
+  the last stage just sent). A sighting counts only when the freshest endpoint has also seen every tx the last finished
+  loop sent from that account (its sequence or nonce is past them); a node behind them is serving the loop's own funds
+  from before they moved. It is then recovered by the part of the loop that starts where it is: C3 onward (A3), C2
   onward (A2 then A3), or a single 1:1 swap into allUSDC on pool 3497. A refunded IBC hop in A1 or C1 is resent from the refunded
   USDC.noble without swapping more. Recovery uses the same validators, journal and fee rules as a loop, runs even
   when the pool is at target, and does not count as a loop. `auto_recover: false` halts instead.

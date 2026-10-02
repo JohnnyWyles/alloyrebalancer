@@ -47,17 +47,37 @@ export const nextUtcMidnight = (now = Date.now()) => { const d = new Date(now); 
    up USDC on Avalanche and USDC.inj on Injective. USDC.inj or USDC.noble found on Osmosis is one 1:1 swap (C3s, N0). */
 export function planRecovery(b, strandMicro, ORDER, now = Date.now(), starts = { avaxUsdc: "A2", injUsdc: "A3" }) {
   const id = "recover-" + new Date(now).toISOString().replace(/[-:]/g, "").slice(0, 15);
-  const at = (key, amt, what) => {
+  const at = (key, amt, what, from) => {
     const idx = ORDER.indexOf(key); if (idx < 1) throw new Error(`recovery start ${key} is not a later stage of ${ORDER.join(",")}`);
-    return { id, recovery: what, amountIn: amt.toString(), idx, startIdx: idx, order: ORDER,
+    return { id, recovery: what, from, amountIn: amt.toString(), idx, startIdx: idx, order: ORDER,
       stages: { [ORDER[idx - 1]]: { amountIn: amt.toString(), received: amt.toString(), signed: 0, recovered: true } } };
   };
-  const swap = (key, amt, what) => ({ id, recovery: what, amountIn: amt.toString(), idx: 0, order: [key], stages: {} });
-  if (b.injUsdc >= strandMicro) return at(starts.injUsdc, b.injUsdc, "USDC.inj on Injective");
-  if (b.avaxUsdc >= strandMicro) return at(starts.avaxUsdc, b.avaxUsdc, "USDC on Avalanche");
-  if ((b.injOnOsmo ?? 0n) >= strandMicro) return swap("C3s", b.injOnOsmo, "USDC.inj on Osmosis");
-  if (b.noble >= strandMicro) return swap("N0", b.noble, "USDC.noble on Osmosis");
+  const swap = (key, amt, what, from) => ({ id, recovery: what, from, amountIn: amt.toString(), idx: 0, order: [key], stages: {} });
+  if (b.injUsdc >= strandMicro) return at(starts.injUsdc, b.injUsdc, "USDC.inj on Injective", "injUsdc");
+  if (b.avaxUsdc >= strandMicro) return at(starts.avaxUsdc, b.avaxUsdc, "USDC on Avalanche", "avaxUsdc");
+  if ((b.injOnOsmo ?? 0n) >= strandMicro) return swap("C3s", b.injOnOsmo, "USDC.inj on Osmosis", "injOnOsmo");
+  if (b.noble >= strandMicro) return swap("N0", b.noble, "USDC.noble on Osmosis", "noble");
   return null;
+}
+
+/* The account counter (Cosmos sequence, EVM nonce) of the last tx each chain saw from a finished cycle. Every one of
+   those txs landed, so a node still at or below that counter is serving state from before the cycle's own sends: the
+   balance it shows (the USDC.inj C3 just moved, say) is not stranded. */
+export function lastSentAfter(prev, c) {
+  const out = { ...(prev || {}) };
+  for (const st of Object.values(c.stages || {})) {
+    const t = st.tx, n = t?.sequence ?? t?.nonce;
+    if (!t?.chain || n === undefined) continue;
+    if (out[t.chain] === undefined || BigInt(n) > BigInt(out[t.chain])) out[t.chain] = String(n);
+  }
+  return out;
+}
+/* the counter a node must show to have seen all of them (keys share one account counter, e.g. Injective's Cosmos and
+   EVM txs), or null when it has */
+export function counterBehind(lastSent, keys, seen) {
+  let top = -1n;
+  for (const k of keys) if (lastSent?.[k] !== undefined && BigInt(lastSent[k]) > top) top = BigInt(lastSent[k]);
+  return top >= 0n && BigInt(seen) <= top ? top + 1n : null;
 }
 
 export function makeRunner({ STAGES, ORDER, saveState, log, addFee, notify = async () => {}, refillGas = null, retryMs = 120000, refundRetryMs = 300000, requoteMs = 30000 }) {
@@ -145,6 +165,7 @@ export function makeRunner({ STAGES, ORDER, saveState, log, addFee, notify = asy
   const out = BigInt(c.amountIn), back = BigInt(last.received), loss = out > back ? out - back : 0n, quoted = quotedLoss(c, order);
   addFee(s, loss);
   s.history = [...(s.history || []).slice(-49), { id: c.id, out: c.amountIn, back: last.received, done: new Date().toISOString(), ...(c.recovery ? { recovery: c.recovery } : {}) }];
+  s.lastSent = lastSentAfter(s.lastSent, c);
   s.cycle = null; if (!c.recovery) s.loopsToday = (s.loopsToday || 0) + 1;   // a recovery brings funds home; it is not a loop
   saveState(s);
   log(`[${c.id}] ${c.recovery ? `recovered ${c.recovery}` : "loop complete"}: ${fmtUnits(out)} out, ${fmtUnits(back)} back, loss ${fmtUnits(loss)}`);

@@ -86,6 +86,34 @@ export async function headroom(denom, direction, channel, reservePct = 0) {
 }
 
 /* ---------------- balances ---------------- */
+/* One endpoint's view of an account: a balance and the account's tx counter (Cosmos sequence, EVM nonce) read from the
+   same node, so a lagging node cannot pair an old balance with someone else's fresh counter. Every endpoint is asked
+   and the one furthest along wins; it throws only when none answers. */
+export async function accountView(chainId, addr, asset) {
+  const evm = K.EVM[chainId];
+  const one = evm
+    ? async url => {
+        const j = await P.jget(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify([
+          { jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to: asset, data: "0x70a08231" + P.pad32(addr) }, "latest"] },
+          { jsonrpc: "2.0", id: 2, method: "eth_getTransactionCount", params: [addr, "latest"] }]) });
+        const r = id => { const x = Array.isArray(j) && j.find(e => e.id === id); if (!x || x.error || x.result == null) throw new Error(`no result ${id} from ${url}`); return BigInt(x.result); };
+        return { bal: r(1), counter: r(2), ep: url };
+      }
+    : async ep => {
+        const [a, b] = await Promise.all([P.jget(`${ep}/cosmos/auth/v1beta1/accounts/${addr}`),
+          P.jget(`${ep}/cosmos/bank/v1beta1/balances/${addr}/by_denom?denom=${encodeURIComponent(asset)}`)]);
+        let x = a.account; for (let i = 0; i < 4 && x && x.account_number === undefined; i++) x = x.base_account || x.base_vesting_account || {};
+        if (x?.sequence === undefined) throw new Error(`unrecognised account shape from ${ep}`);
+        return { bal: BigInt(b.balance?.amount || "0"), counter: BigInt(x.sequence), ep };
+      };
+  const eps = evm ? evm.rpc : await P.proveEndpoints(chainId);
+  const got = await Promise.allSettled(eps.map(one));
+  const best = freshestView(got.filter(g => g.status === "fulfilled").map(g => g.value));
+  if (!best) throw got.find(g => g.status === "rejected")?.reason || new Error(`no endpoint answered for ${addr} on ${chainId}`);
+  return best;
+}
+export const freshestView = views => views.reduce((a, v) => (!a || v.counter > a.counter ? v : a), null);
+
 export async function balances(W) {
   const [all, noble, injOnOsmo, avaxUsdc, avax, inj, injUsdc] = await Promise.all([
     bankBalance("osmosis-1", W.osmo, K.ALL), bankBalance("osmosis-1", W.osmo, K.NOBLE), bankBalance("osmosis-1", W.osmo, K.INJ_IBC),

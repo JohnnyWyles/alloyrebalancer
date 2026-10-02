@@ -92,7 +92,7 @@ export async function signAndBroadcast(chainId, wallet, anys, note, onSigned, op
   const hash = await txHashOf(raw);
   if (opts.dryRun) { note(`dry run: would broadcast ${hash} (gas ${gas}, fee ${fee} ${feeDenom})`); return { hash, fee, feeDenom, dryRun: true }; }
   // recorded before the POST; feeAllUSDC lets the caller book the fee in the same durable write as the tx
-  await onSigned({ hash, raw: b64(raw), timeoutHeight, chain: chainId, fee, feeDenom, feeAllUSDC: feeDenom === K.ALL ? fee : "0" });
+  await onSigned({ hash, raw: b64(raw), timeoutHeight, chain: chainId, sequence: String(acc.sequence), fee, feeDenom, feeAllUSDC: feeDenom === K.ALL ? fee : "0" });
   note(`broadcasting ${hash} (gas ${gas}, fee ${fee} ${feeDenom === K.ALL ? "uallUSDC" : feeDenom})`);
   // a transport error here propagates without rejectedHash: the journaled tx is resolved by hash / timeout height later
   const res = await lcdPost(simEp, "/cosmos/tx/v1beta1/txs", { tx_bytes: b64(raw), mode: "BROADCAST_MODE_SYNC" });

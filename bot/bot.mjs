@@ -22,8 +22,8 @@ import { P } from "./page.mjs";
 import { deriveWallet } from "./sign.mjs";
 import { STAGES, ORDER, SKIP_ORDER, CCTP_ORDER, RECOVERY_STARTS, halt, tightenMinAsset } from "./stages.mjs";
 import { CCTP, cctpSelfCheck, depositForBurnV2Calldata, orbiterMemo } from "./cctp.mjs";
-import { makeRunner, fitsFeeCap, loopLossBound, cycleLossBound, planRecovery, nextUtcMidnight } from "./cycle.mjs";
-import { readPool, deficit, sharePct, headroom, balances, refillGas } from "./chain.mjs";
+import { makeRunner, fitsFeeCap, loopLossBound, cycleLossBound, planRecovery, nextUtcMidnight, counterBehind } from "./cycle.mjs";
+import { readPool, deficit, sharePct, headroom, balances, refillGas, accountView } from "./chain.mjs";
 
 const { K, fmtUnits, setLog, PROVEN, sleep } = P;
 const argv = process.argv.slice(2), cmd = argv.find(a => !a.startsWith("--")) || "status", DRY = argv.includes("--dry-run");
@@ -205,6 +205,26 @@ function switchUnsigned(s) {
   c.order = MODE_ORDER; c.stages = {}; saveState(s);
 }
 
+/* Where each kind of stranded balance is read, and which chains' recorded tx counters it must have passed (Injective's
+   Cosmos and EVM txs share one account counter). */
+const STRAND_VIEW = {
+  injUsdc: W => ["injective-1", W.inj, K.INJ_ERC20, ["injective-1", K.INJ_EVM_CHAIN]],
+  avaxUsdc: W => ["43114", W.evm, K.HUB["43114"].usdc, ["43114"]],
+  injOnOsmo: W => ["osmosis-1", W.osmo, K.INJ_IBC, ["osmosis-1"]],
+  noble: W => ["osmosis-1", W.osmo, K.NOBLE, ["osmosis-1"]],
+};
+/* A sighting only counts when the freshest endpoint has seen every tx the last finished cycle sent from that account,
+   and still shows the balance. Otherwise it is the cycle's own funds on a lagging node (C3's USDC.inj still on
+   Injective a minute after it left), and recovering it would sign a stage for money that is already home. */
+async function strandIsStale(ctx, s, plan, strand) {
+  const [chain, addr, asset, keys] = STRAND_VIEW[plan.from](ctx.W);
+  const v = await accountView(chain, addr, asset);
+  const need = counterBehind(s.lastSent, keys, v.counter);
+  if (need !== null) return `${fmtUnits(plan.amountIn)} ${plan.recovery} is not counted as stranded: the freshest endpoint (${v.ep}) is at account counter ${v.counter}, behind the ${need} the last loop's own txs reached`;
+  if (v.bal < strand) return `${plan.recovery} is not counted as stranded: the freshest endpoint (${v.ep}) shows ${fmtUnits(v.bal)}`;
+  return null;
+}
+
 /* ---------------- one decision ---------------- */
 async function tick(ctx) {
   const s = loadState(); rollDay(s); acknowledgeHalt(s);
@@ -226,6 +246,11 @@ async function tick(ctx) {
      loop that starts where the funds are brings them home. This runs whether or not the pool is at target. */
   const strand = usdc(ctx.cfg.stranded_threshold_usdc);
   const plan = planRecovery(sb, strand, MODE_ORDER, Date.now(), RECOVERY_STARTS[MODE]);
+  const stale = plan && await strandIsStale(ctx, s, plan, strand);
+  if (stale) {   // neither reading counts: the 50 s confirmation starts again from the next fresh sighting
+    if (s.strandSeen) { s.strandSeen = undefined; saveState(s); }
+    return log(stale), "rechecking";
+  }
   if (!plan) { if (s.strandSeen) { log(`funds outside the alloy (${s.strandSeen.what}) are gone on a second reading: it was a lagging endpoint`); s.strandSeen = undefined; saveState(s); } }
   else if (!s.strandSeen || s.strandSeen.what !== plan.recovery || Date.now() - s.strandSeen.at > 15 * 60000) {
     s.strandSeen = { what: plan.recovery, at: Date.now() }; saveState(s);

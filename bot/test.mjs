@@ -10,9 +10,9 @@
 import fs from "node:fs";
 import { P } from "./page.mjs";
 import { deriveWallet, SignDoc, signCosmosBytes, signEip1559, rlp, sendRawEvm, gweiStr } from "./sign.mjs";
-import { deficit, sharePct, quotaRoom, gasSpec } from "./chain.mjs";
+import { deficit, sharePct, quotaRoom, gasSpec, accountView, freshestView } from "./chain.mjs";
 import { tightenMinAsset, watchArrival } from "./stages.mjs";
-import { makeRunner, MAX_SIGNED_ATTEMPTS, ALERT_REQUOTES, fitsFeeCap, loopLossBound, cycleLossBound, nextUtcMidnight, planRecovery } from "./cycle.mjs";
+import { makeRunner, MAX_SIGNED_ATTEMPTS, ALERT_REQUOTES, fitsFeeCap, loopLossBound, cycleLossBound, nextUtcMidnight, planRecovery, lastSentAfter, counterBehind } from "./cycle.mjs";
 import { CCTP, SEL, MESSAGE_SENT_TOPIC, depositForBurnV2Calldata, receiveMessageCalldata, orbiterMemo, parseMessageV1, parseMessageV2, checkBurnV1, checkBurnV2,
          messageFromReceipt, waitAttestation, irisMessages, v1NonceKey, packetSeqOf, nobleReceiptOf, checkNobleBurn } from "./cctp.mjs";
 import { STAGES as REAL_STAGES, CCTP_ORDER, SKIP_ORDER, RECOVERY_STARTS, cctpApprovalPlan } from "./stages.mjs";
@@ -492,6 +492,47 @@ const fresh = (amt = "100000000") => ({ cycle: { id: "t", amountIn: amt, idx: 0,
   const run2 = makeRunner({ STAGES: { F }, ORDER: ["F"], saveState: () => {}, log: () => {}, addFee: () => {}, retryMs: 0, refundRetryMs: 0 });
   const s2 = { cycle: { id: "f", amountIn: "5", idx: 0, order: ["F"], stages: {} } };
   ok(await run2({ cfg: { max_loop_loss_bps: 5 }, capMicro: 5000000n }, s2) === "done" && s2.history.at(-1).back === "5", "an arrivalFailed stage with a proven refund is sent again and completes");
+}
+{
+  // stranded-funds sightings on a lagging node: the 2 Oct loop's C3 left Injective at sequence 1116, a node still at
+  // 1116 showed its 2,000 USDC.inj a minute later, and a recovery started for money that was already home
+  const IE = P.K.INJ_EVM_CHAIN, z = { noble: 0n, avaxUsdc: 0n, injUsdc: 0n, injOnOsmo: 0n };
+  ok(planRecovery({ ...z, injUsdc: 5n }, 1n, CCTP_ORDER, 0, RECOVERY_STARTS.cctp).from === "injUsdc" && planRecovery({ ...z, avaxUsdc: 5n }, 1n, CCTP_ORDER, 0, RECOVERY_STARTS.cctp).from === "avaxUsdc"
+    && planRecovery({ ...z, injOnOsmo: 5n }, 1n, CCTP_ORDER, 0, RECOVERY_STARTS.cctp).from === "injOnOsmo" && planRecovery({ ...z, noble: 5n }, 1n, CCTP_ORDER, 0, RECOVERY_STARTS.cctp).from === "noble",
+    "each recovery names the balance it was planned from");
+  const loop = { stages: { C1: { tx: { chain: "osmosis-1", sequence: "880" } }, C1m: { tx: { chain: "43114", nonce: "1985" } }, C2: { tx: { chain: "43114", nonce: "1986" } },
+    C2m: { tx: { chain: IE, nonce: "1115" } }, C3: { tx: { chain: "injective-1", sequence: "1116" } }, C3s: { tx: { chain: "osmosis-1", sequence: "881" } }, X: { received: "5" } } };
+  const ls = lastSentAfter(undefined, loop);
+  ok(ls["osmosis-1"] === "881" && ls["43114"] === "1986" && ls[IE] === "1115" && ls["injective-1"] === "1116", "a finished loop records the highest counter per chain");
+  ok(lastSentAfter({ "43114": "2000", "osmosis-1": "10" }, loop)["43114"] === "2000" && lastSentAfter({ "osmosis-1": "10" }, loop)["osmosis-1"] === "881", "an earlier higher counter is kept, a lower one raised");
+  ok(counterBehind(ls, ["injective-1", IE], 1116n) === 1117n, "a node still at C3's own sequence is behind: the balance it shows predates C3");
+  ok(counterBehind(ls, ["injective-1", IE], 1117n) === null && counterBehind(ls, ["43114"], 1987n) === null, "a node past the last tx counts");
+  ok(counterBehind({ [IE]: "1115" }, ["injective-1", IE], 1115n) === 1116n, "Injective's EVM nonce and Cosmos sequence are one counter");
+  ok(counterBehind(undefined, ["injective-1"], 0n) === null && counterBehind({}, ["43114"], 3n) === null, "no finished loop yet: nothing to be behind");
+  ok(freshestView([{ counter: 1116n, ep: "a" }, { counter: 1117n, ep: "b" }, { counter: 1110n, ep: "c" }]).ep === "b" && freshestView([]) === null, "the endpoint furthest along wins");
+  // accountView reads balance and counter from one endpoint and takes the freshest; a dead endpoint is skipped
+  const realFetch = globalThis.fetch, res = j => ({ ok: true, status: 200, text: async () => JSON.stringify(j) });
+  try {
+    const [r0, r1] = P.K.EVM["43114"].rpc;
+    globalThis.fetch = async url => url === r0 ? res([{ id: 1, result: "0x" + (2000e6).toString(16) }, { id: 2, result: "0x7c2" }])
+                                               : res([{ id: 2, result: "0x7c3" }, { id: 1, result: "0x0" }]);
+    const v = await accountView("43114", "0x4ae098781bc68f5b2073a4e15931ba9c9ce040b3", P.K.HUB["43114"].usdc);
+    ok(v.ep === r1 && v.counter === 0x7c3n && v.bal === 0n, "EVM: the RPC with the higher nonce is believed, with its own balance");
+    globalThis.fetch = async url => url === r0 ? { ok: false, status: 503, text: async () => "{}" } : res([{ id: 1, result: "0x5" }, { id: 2, result: "0x9" }]);
+    const w = await accountView("43114", "0x4ae098781bc68f5b2073a4e15931ba9c9ce040b3", P.K.HUB["43114"].usdc);
+    ok(w.ep === r1 && w.bal === 5n && w.counter === 9n, "EVM: a failing RPC is skipped");
+    P.PROVEN["injective-1-test"] = ["https://stale.example", "https://fresh.example"];
+    globalThis.fetch = async url => {
+      const fresh = url.startsWith("https://fresh");
+      if (url.includes("/auth/")) return res({ account: { "@type": "/injective.types.v1beta1.EthAccount", base_account: { account_number: "1", sequence: fresh ? "1117" : "1116" } } });
+      return res({ balance: { amount: fresh ? "0" : "2000000000" } });
+    };
+    const c = await accountView("injective-1-test", "inj1ftsfs7qmc684kgrn5ns4jvd6njwwqs9n3rrvrm", P.K.INJ_ERC20);
+    ok(c.ep === "https://fresh.example" && c.counter === 1117n && c.bal === 0n, "Cosmos: the 2 Oct case: the stale node's 2,000 is ignored, the fresh node's 0 is believed");
+    globalThis.fetch = async () => { throw new Error("down"); };
+    let threw = false; try { await accountView("injective-1-test", "inj1x", "x"); } catch { threw = true; }
+    ok(threw, "no endpoint answering throws instead of reading zero");
+  } finally { globalThis.fetch = realFetch; delete P.PROVEN["injective-1-test"]; }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
