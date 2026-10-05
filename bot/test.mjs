@@ -16,6 +16,7 @@ import { makeRunner, MAX_SIGNED_ATTEMPTS, ALERT_REQUOTES, fitsFeeCap, loopLossBo
 import { CCTP, SEL, MESSAGE_SENT_TOPIC, depositForBurnV2Calldata, receiveMessageCalldata, orbiterMemo, parseMessageV1, parseMessageV2, checkBurnV1, checkBurnV2,
          messageFromReceipt, waitAttestation, irisMessages, v1NonceKey, packetSeqOf, nobleReceiptOf, checkNobleBurn } from "./cctp.mjs";
 import { STAGES as REAL_STAGES, CCTP_ORDER, SKIP_ORDER, RECOVERY_STARTS, cctpApprovalPlan } from "./stages.mjs";
+import { lockText, lockStatus } from "./lock.mjs";
 
 const FIX = p => JSON.parse(fs.readFileSync(new URL("../test-fixtures/" + p, import.meta.url), "utf8"));
 let pass = 0, fail = 0;
@@ -533,6 +534,20 @@ const fresh = (amt = "100000000") => ({ cycle: { id: "t", amountIn: amt, idx: 0,
     let threw = false; try { await accountView("injective-1-test", "inj1x", "x"); } catch { threw = true; }
     ok(threw, "no endpoint answering throws instead of reading zero");
   } finally { globalThis.fetch = realFetch; delete P.PROVEN["injective-1-test"]; }
+}
+
+{
+  // the single-signer lock after a reboot: the old pid (899 on 5 Oct) belonged to another program, and a bare
+  // "is pid alive" check refused to start
+  const f = (o = {}) => ({ bootId: "boot-B", alive: () => true, cmdline: () => "node /opt/alloyrebalancer/bot/bot.mjs run", ...o });
+  ok(lockStatus("899", f({ cmdline: () => "/usr/sbin/sshd -D" })).stale, "old-format lock whose pid is now another program is stale");
+  ok(!lockStatus("899", f()).stale, "old-format lock held by a running bot.mjs is respected");
+  ok(lockStatus("899", f({ alive: () => false })).stale, "a dead pid is stale");
+  ok(lockStatus(lockText(899, "boot-A"), f()).stale, "a lock from before the last reboot is stale even if the pid looks like the bot");
+  ok(!lockStatus(lockText(899, "boot-B"), f()).stale, "same boot, live bot.mjs: respected");
+  ok(!lockStatus(lockText(899, null), f({ bootId: null, cmdline: () => null })).stale, "no /proc (not Linux): a live pid is respected, as before");
+  ok(lockStatus("", f()).stale && lockStatus("garbage", f()).stale, "an unreadable lock is stale");
+  ok(JSON.parse(lockText(42, "b")).pid === 42 && JSON.parse(lockText(42, "b")).boot === "b", "lock text records pid and boot");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

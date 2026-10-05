@@ -24,6 +24,7 @@ import { STAGES, ORDER, SKIP_ORDER, CCTP_ORDER, RECOVERY_STARTS, halt, tightenMi
 import { CCTP, cctpSelfCheck, depositForBurnV2Calldata, orbiterMemo } from "./cctp.mjs";
 import { makeRunner, fitsFeeCap, loopLossBound, cycleLossBound, planRecovery, nextUtcMidnight, counterBehind } from "./cycle.mjs";
 import { readPool, deficit, sharePct, headroom, balances, refillGas, accountView } from "./chain.mjs";
+import { lockText, lockStatus, processFacts } from "./lock.mjs";
 
 const { K, fmtUnits, setLog, PROVEN, sleep } = P;
 const argv = process.argv.slice(2), cmd = argv.find(a => !a.startsWith("--")) || "status", DRY = argv.includes("--dry-run");
@@ -369,16 +370,17 @@ async function status(ctx) {
   }, null, 1));
 }
 
-/* one signer per wallet: two instances would each sign the same stage. A lock left by a dead process is taken over. */
+/* one signer per wallet: two instances would each sign the same stage. A stale lock (dead process, a reboot since it
+   was taken, or its pid reused by another program) is taken over; see lock.mjs. */
 function lock() {
-  const f = path.join(DIR, "LOCK");
+  const f = path.join(DIR, "LOCK"), facts = processFacts();
   for (let i = 0; i < 2; i++) {
-    try { fs.writeFileSync(f, String(process.pid), { flag: "wx" }); process.on("exit", () => { try { fs.unlinkSync(f); } catch {} }); for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => process.exit(0)); return; }
+    try { fs.writeFileSync(f, lockText(process.pid, facts.bootId), { flag: "wx" }); process.on("exit", () => { try { fs.unlinkSync(f); } catch {} }); for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => process.exit(0)); return; }
     catch (e) {
       if (e.code !== "EEXIST") throw e;
-      const pid = Number(fs.readFileSync(f, "utf8"));
-      let alive = false; try { process.kill(pid, 0); alive = true; } catch (k) { alive = k.code === "EPERM"; }
-      if (alive) throw new Error(`another alloybot (pid ${pid}) holds ${f}; stop it first (systemctl stop alloybot)`);
+      const st = lockStatus(fs.readFileSync(f, "utf8"), facts);
+      if (!st.stale) throw new Error(`another alloybot (pid ${st.pid}) holds ${f}; stop it first (systemctl stop alloybot)`);
+      log(`taking over a stale ${f} (pid ${st.pid}: ${st.why})`);
       fs.unlinkSync(f);
     }
   }

@@ -353,6 +353,7 @@ are sent there.
 | `stages.mjs` | the CCTP stages C1 to C3s, the Skip stages A1 to A3, and N0 (the USDC.noble recovery swap) |
 | `cctp.mjs` | pinned Circle contracts, calldata, CCTP message decoding and checks, Iris attestations, the Noble burn lookup |
 | `chain.mjs` | pool reads, IBC rate-limit headroom, balances, gas refills |
+| `lock.mjs` | the single-signer lock: when a leftover `LOCK` is stale (process gone, taken before a reboot, or its pid reused by another program) |
 | `sign.mjs` | key derivation, Cosmos sign-direct (secp256k1; ethsecp256k1 for Injective), EIP-1559, send classification |
 | `page.mjs`, `extract.mjs` | load constants, encoders, validators and network helpers from `../index.html` |
 | `test.mjs` | signing against cosmjs and ethers reference output, decision and fee-cap math, rate-limit sizing, runner rules, CCTP messages and calldata against real mainnet burns |
