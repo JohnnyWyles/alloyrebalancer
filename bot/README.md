@@ -121,6 +121,8 @@ in dollars and less per dollar moved.
   being waited for (waiting never re-signs anything), with an alert when it first goes late and every 3 hours after.
   A stage that cannot pay its AVAX or INJ gas mid-loop buys more from the Osmosis allUSDC reserve and carries on.
   Using up `max_gas_refills_per_day` waits for 00:00 UTC with one alert.
+  A balance that reads short just before a stage signs is re-read on the freshest endpoint, and a stage still short
+  waits (nothing signed) and halts only after 10 minutes of it: a lagging public endpoint can lag a just-landed transfer.
 - **Halts only for what needs a person.** A loop that lost more than Skip quoted by over `max_loop_loss_bps` of its
   amount, a stage signed three times without success, a balance missing at the start of a stage, a state file for a
   different wallet, or a lost journal each write a `HALTED` file and stop the bot until a person deletes it. A halted

@@ -15,7 +15,7 @@ import { tightenMinAsset, watchArrival } from "./stages.mjs";
 import { makeRunner, MAX_SIGNED_ATTEMPTS, ALERT_REQUOTES, fitsFeeCap, loopLossBound, cycleLossBound, nextUtcMidnight, planRecovery, lastSentAfter, counterBehind } from "./cycle.mjs";
 import { CCTP, SEL, MESSAGE_SENT_TOPIC, depositForBurnV2Calldata, receiveMessageCalldata, orbiterMemo, parseMessageV1, parseMessageV2, checkBurnV1, checkBurnV2,
          messageFromReceipt, waitAttestation, irisMessages, v1NonceKey, packetSeqOf, nobleReceiptOf, checkNobleBurn } from "./cctp.mjs";
-import { STAGES as REAL_STAGES, CCTP_ORDER, SKIP_ORDER, RECOVERY_STARTS, cctpApprovalPlan } from "./stages.mjs";
+import { STAGES as REAL_STAGES, CCTP_ORDER, SKIP_ORDER, RECOVERY_STARTS, cctpApprovalPlan, needBalance, SHORT_GRACE_MS } from "./stages.mjs";
 import { lockText, lockStatus } from "./lock.mjs";
 
 const FIX = p => JSON.parse(fs.readFileSync(new URL("../test-fixtures/" + p, import.meta.url), "utf8"));
@@ -548,6 +548,28 @@ const fresh = (amt = "100000000") => ({ cycle: { id: "t", amountIn: amt, idx: 0,
   ok(!lockStatus(lockText(899, null), f({ bootId: null, cmdline: () => null })).stale, "no /proc (not Linux): a live pid is respected, as before");
   ok(lockStatus("", f()).stale && lockStatus("garbage", f()).stale, "an unreadable lock is stale");
   ok(JSON.parse(lockText(42, "b")).pid === 42 && JSON.parse(lockText(42, "b")).boot === "b", "lock text records pid and boot");
+}
+
+{
+  // a stage's pre-send balance check: one lagging endpoint showed 0 USDC.inj on Osmosis right after C3 delivered it
+  // (5 Oct) and C3s halted; a short read is now confirmed on the freshest endpoint and given a grace period
+  const msg = b => `USDC.inj balance on Osmosis ${b} is below the 2,000 this stage expects`;
+  const fresh = bal => async () => ({ bal, ep: "https://fresh.example", counter: 1n });
+  let calls = 0; const counted = bal => async () => { calls++; return { bal, ep: "x", counter: 1n }; };
+  await needBalance({}, counted(0n), 2000000000n, "2000000000", msg, 0); ok(calls === 0, "enough on the first read: no second read");
+  let r = await needBalance({}, fresh(2000000000n), 0n, "2000000000", msg, 0).then(() => "ok", e => e);
+  ok(r === "ok", "the 5 Oct case: first read 0, freshest endpoint shows 2,000, the stage goes ahead");
+  r = await needBalance({}, fresh(0n), 0n, "2000000000", msg, 1000).then(() => "ok", e => e);
+  ok(r.waitRetry && r.nothingSent && !r.halt, "still short on the freshest endpoint: wait, nothing signed, no halt");
+  r = await needBalance({}, fresh(0n), 0n, "2000000000", msg, 1000 + SHORT_GRACE_MS - 1).then(() => "ok", e => e);
+  ok(r.waitRetry && !r.halt, "short for just under the grace period: still waiting");
+  r = await needBalance({}, fresh(0n), 0n, "2000000000", msg, 1000 + SHORT_GRACE_MS).then(() => "ok", e => e);
+  ok(r.halt && /still short after 10 minutes/.test(r.message), "short for the whole grace period: halts");
+  r = await needBalance({}, fresh(0n), 0n, "2000000000", msg, 5000000).then(() => "ok", e => e);
+  ok(r.waitRetry && !r.halt, "after a halt the grace starts again rather than halting at once");
+  await needBalance({}, fresh(2000000000n), 0n, "2000000000", msg, 5000001);
+  r = await needBalance({}, fresh(0n), 0n, "2000000000", msg, 5000002 + SHORT_GRACE_MS - 10).then(() => "ok", e => e);
+  ok(r.waitRetry && !r.halt, "a sighting of the funds resets the grace");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

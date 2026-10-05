@@ -21,7 +21,7 @@
  */
 import { P } from "./page.mjs";
 import { signAndBroadcast, evmSend, sendRawEvm, cosmosTxState, evmTxState, rebroadcastCosmos, waitCosmosTx, waitReceiptFast } from "./sign.mjs";
-import { headroom, readPool } from "./chain.mjs";
+import { headroom, readPool, accountView } from "./chain.mjs";
 import { CCTP, orbiterMemo, depositForBurnV2Calldata, receiveMessageCalldata, parseMessageV1, parseMessageV2, checkBurnV1, checkBurnV2,
          messageFromReceipt, waitAttestation, v1NonceKey, nonceUsed, cctpSelfCheck, packetSeqOf, findNobleReceipt, checkNobleBurn } from "./cctp.mjs";
 
@@ -89,6 +89,28 @@ const injUsdc = ctx => bankBalance("injective-1", ctx.W.inj, K.INJ_ERC20);
 const osmoAll = ctx => bankBalance("osmosis-1", ctx.W.osmo, K.ALL);
 const osmoNoble = ctx => bankBalance("osmosis-1", ctx.W.osmo, K.NOBLE);
 const osmoInj = ctx => bankBalance("osmosis-1", ctx.W.osmo, K.INJ_IBC);
+/* A balance short of what a stage expects halts only once it is confirmed. One lagging public endpoint showed 0
+   USDC.inj on Osmosis seconds after C3 had delivered it, and C3s halted on that single read. A short read is re-read
+   on the freshest endpoint (every endpoint asked, the one furthest along believed); still short, the stage waits
+   (nothing signed) and re-checks each tick, and halts only once it has been short for SHORT_GRACE_MS. */
+export const SHORT_GRACE_MS = 10 * 60000;
+const shortSince = new Map();   // in memory: a restart restarts the grace, which can only delay a halt
+const FRESH = {
+  avaxUsdc: ctx => accountView(AVAX, ctx.W.evm, H.usdc),
+  injUsdc: ctx => accountView("injective-1", ctx.W.inj, K.INJ_ERC20),
+  osmoInj: ctx => accountView("osmosis-1", ctx.W.osmo, K.INJ_IBC),
+  osmoNoble: ctx => accountView("osmosis-1", ctx.W.osmo, K.NOBLE),
+};
+export async function needBalance(ctx, fresh, bal, amountIn, message, now = Date.now()) {
+  const need = BigInt(amountIn), key = message("") + amountIn;
+  if (BigInt(bal) >= need) { shortSince.delete(key); return; }
+  const v = await fresh(ctx);
+  if (v.bal >= need) { shortSince.delete(key); return; }   // the first read came from a lagging endpoint
+  if (!shortSince.has(key)) shortSince.set(key, now);
+  const min = SHORT_GRACE_MS / 60000;
+  if (now - shortSince.get(key) >= SHORT_GRACE_MS) { shortSince.delete(key); throw halt(`${message(v.bal)} (still short after ${min} minutes; freshest endpoint ${v.ep})`); }
+  throw Object.assign(new Error(`${message(v.bal)}; nothing signed, re-checking (halts if still short after ${min} minutes)`), { waitRetry: true, nothingSent: true });
+}
 /* a definitive "this stage did not deliver" that is not a balance timeout: the runner then asks refunded() */
 const arrivalFailed = msg => Object.assign(new Error(msg), { arrivalFailed: true });
 const IBC_TIMEOUT_MS = 60 * 60000;   // an unrelayed packet times out (and refunds) after an hour
@@ -190,7 +212,7 @@ export const STAGES = {
     async send(ctx, st, note, onSigned) {
       const amountIn = st.amountIn, bal = await osmoNoble(ctx);
       await needHealthyPool();
-      if (bal < BigInt(amountIn)) throw halt(`USDC.noble balance ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this recovery expects`);
+      await needBalance(ctx, FRESH.osmoNoble, bal, amountIn, b => `USDC.noble balance ${fmtUnits(b)} is below the ${fmtUnits(amountIn)} this recovery expects`);
       Object.assign(st, { before: (await osmoAll(ctx)).toString(), expected: amountIn });
       note(`swap ${fmtUnits(amountIn)} USDC.noble -> allUSDC on pool ${K.POOL}, minimum out ${fmtUnits(amountIn)}`);
       return signAndBroadcast("osmosis-1", ctx.wallet, [Any("/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn", MsgSwapExactAmountIn({ sender: ctx.W.osmo,
@@ -214,7 +236,7 @@ export const STAGES = {
       const amountIn = st.amountIn;
       const [bal, before, res] = await Promise.all([avaxUsdc(ctx), injUsdc(ctx),
         skipRoute(H.usdc, AVAX, K.INJ_EVM_USDC, K.INJ_EVM_CHAIN, amountIn, { [AVAX]: ctx.W.evm, [K.INJ_EVM_CHAIN]: ctx.W.injHex })]);
-      if (bal < BigInt(amountIn)) throw halt(`Avalanche USDC balance ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this stage expects`);
+      await needBalance(ctx, FRESH.avaxUsdc, bal, amountIn, b => `Avalanche USDC balance ${fmtUnits(b)} is below the ${fmtUnits(amountIn)} this stage expects`);
       const v = validateHubToInj(res, { evm: ctx.W.evm, injHex: ctx.W.injHex, amountIn, hub: AVAX }); if (!v.ok) throw refused(v);
       Object.assign(st, { before: before.toString(), expected: v.amountOut });
       const tx = res.txs[0].evm_tx, eo = { ...ctx.signOpts, maxFeeGwei: ctx.cfg.avax_max_fee_gwei };
@@ -240,7 +262,7 @@ export const STAGES = {
       const [bal, , , , before, res] = await Promise.all([injUsdc(ctx), assertChannel("injective-1", K.INJ_TO_OSMO, "osmosis-1"), needHealthyPool(),
         needRateRoom(K.INJ_IBC, "in", K.OSMO_TO_INJ, amountIn, ctx), osmoAll(ctx),
         skipRoute(K.INJ_ERC20, "injective-1", K.ALL, "osmosis-1", amountIn, { "injective-1": ctx.W.inj, "osmosis-1": ctx.W.osmo })]);
-      if (bal < BigInt(amountIn)) throw halt(`Injective USDC.inj balance ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this stage expects`);
+      await needBalance(ctx, FRESH.injUsdc, bal, amountIn, b => `Injective USDC.inj balance ${fmtUnits(b)} is below the ${fmtUnits(amountIn)} this stage expects`);
       const v = validateInjToAll(res, { inj: ctx.W.inj, osmo: ctx.W.osmo, amountIn }); if (!v.ok) throw refused(v);
       if (BigInt(v.amountOut || 0) < BigInt(amountIn)) throw requote(`Skip quotes ${fmtUnits(v.amountOut)} allUSDC for ${fmtUnits(amountIn)} USDC.inj through a 1:1 transmuter`);
       tightenMinAsset(res, amountIn);
@@ -339,7 +361,7 @@ export const STAGES = {
     async send(ctx, st, note, onSigned) {
       const amountIn = st.amountIn;
       const [bal] = await Promise.all([avaxUsdc(ctx), cctpSelfCheck()]);
-      if (bal < BigInt(amountIn)) throw halt(`Avalanche USDC balance ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this stage expects`);
+      await needBalance(ctx, FRESH.avaxUsdc, bal, amountIn, b => `Avalanche USDC balance ${fmtUnits(b)} is below the ${fmtUnits(amountIn)} this stage expects`);
       Object.assign(st, { expected: amountIn });
       const eo = evmOpts(ctx, AVAX), have = await erc20Allowance(AVAX, H.usdc, ctx.W.evm, CCTP.TM_V2);
       for (const amt of cctpApprovalPlan(have, amountIn, ctx.cfg.cctp_approval_usdc)) {
@@ -389,7 +411,7 @@ export const STAGES = {
       const amountIn = st.amountIn;
       const [bal, , , before] = await Promise.all([injUsdc(ctx), assertChannel("injective-1", K.INJ_TO_OSMO, "osmosis-1"),
         needRateRoom(K.INJ_IBC, "in", K.OSMO_TO_INJ, amountIn, ctx), osmoInj(ctx)]);
-      if (bal < BigInt(amountIn)) throw halt(`Injective USDC.inj balance ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this stage expects`);
+      await needBalance(ctx, FRESH.injUsdc, bal, amountIn, b => `Injective USDC.inj balance ${fmtUnits(b)} is below the ${fmtUnits(amountIn)} this stage expects`);
       Object.assign(st, { before: before.toString(), expected: amountIn });
       note(`IBC ${fmtUnits(amountIn)} USDC.inj to ${ctx.W.osmo}`);
       return signAndBroadcast("injective-1", ctx.wallet, [Any("/ibc.applications.transfer.v1.MsgTransfer", MsgTransfer({ sourcePort: "transfer", sourceChannel: K.INJ_TO_OSMO,
@@ -415,7 +437,7 @@ export const STAGES = {
     async send(ctx, st, note, onSigned) {
       const amountIn = st.amountIn;
       const [bal] = await Promise.all([osmoInj(ctx), needHealthyPool()]);
-      if (bal < BigInt(amountIn)) throw halt(`USDC.inj balance on Osmosis ${fmtUnits(bal)} is below the ${fmtUnits(amountIn)} this stage expects`);
+      await needBalance(ctx, FRESH.osmoInj, bal, amountIn, b => `USDC.inj balance on Osmosis ${fmtUnits(b)} is below the ${fmtUnits(amountIn)} this stage expects`);
       Object.assign(st, { before: (await osmoAll(ctx)).toString(), expected: amountIn });
       note(`swap ${fmtUnits(amountIn)} USDC.inj -> allUSDC on pool ${K.POOL}, minimum out ${fmtUnits(amountIn)}`);
       return signAndBroadcast("osmosis-1", ctx.wallet, [Any("/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn", MsgSwapExactAmountIn({ sender: ctx.W.osmo,
