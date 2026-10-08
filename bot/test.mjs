@@ -17,6 +17,7 @@ import { CCTP, SEL, MESSAGE_SENT_TOPIC, depositForBurnV2Calldata, receiveMessage
          messageFromReceipt, waitAttestation, irisMessages, v1NonceKey, packetSeqOf, nobleReceiptOf, checkNobleBurn } from "./cctp.mjs";
 import { STAGES as REAL_STAGES, CCTP_ORDER, SKIP_ORDER, RECOVERY_STARTS, cctpApprovalPlan, needBalance, SHORT_GRACE_MS } from "./stages.mjs";
 import { lockText, lockStatus } from "./lock.mjs";
+import { mnemonicFileProblem } from "./credential.mjs";
 
 const FIX = p => JSON.parse(fs.readFileSync(new URL("../test-fixtures/" + p, import.meta.url), "utf8"));
 let pass = 0, fail = 0;
@@ -548,6 +549,25 @@ const fresh = (amt = "100000000") => ({ cycle: { id: "t", amountIn: amt, idx: 0,
   ok(!lockStatus(lockText(899, null), f({ bootId: null, cmdline: () => null })).stale, "no /proc (not Linux): a live pid is respected, as before");
   ok(lockStatus("", f()).stale && lockStatus("garbage", f()).stale, "an unreadable lock is stale");
   ok(JSON.parse(lockText(42, "b")).pid === 42 && JSON.parse(lockText(42, "b")).boot === "b", "lock text records pid and boot");
+}
+
+{
+  // the mnemonic's permissions: systemd 255 (Ubuntu 24.04) hands the LoadCredential file over as root:root 0440 in a
+  // root:root 0550 directory (read granted by ACL) and the old mode-600 rule refused it; systemd 249 used 0400
+  const D = "/run/credentials/alloybot.service", F = `${D}/mnemonic`;
+  const f = (mode, uid = 0, gid = 0) => ({ mode: 0o100000 | mode, uid, gid }), d = (mode, uid = 0, gid = 0) => ({ mode: 0o40000 | mode, uid, gid });
+  ok(mnemonicFileProblem("/etc/alloybot/mnemonic", f(0o600), undefined, null) === null, "a plain 600 file is accepted");
+  ok(mnemonicFileProblem(F, f(0o400, 999, 989), D, d(0o500, 999, 989)) === null, "systemd 249: the service user's 0400 credential is accepted");
+  ok(mnemonicFileProblem(F, f(0o440), D, d(0o550)) === null, "systemd 255: root:root 0440 in a root:root 0550 credentials directory is accepted");
+  ok(/mode 644/.test(mnemonicFileProblem("/etc/alloybot/mnemonic", f(0o644), undefined, null)), "a plain 644 file is refused, with its mode in the reason");
+  ok(mnemonicFileProblem("/etc/alloybot/mnemonic", f(0o440), undefined, null) !== null, "0440 outside a credentials directory is refused");
+  ok(mnemonicFileProblem("/tmp/mnemonic", f(0o440), D, d(0o550)) !== null, "0440 in a different directory than CREDENTIALS_DIRECTORY is refused");
+  ok(mnemonicFileProblem(F, f(0o444), D, d(0o550)) !== null, "world-readable is refused even in the credentials directory");
+  ok(mnemonicFileProblem(F, f(0o460), D, d(0o550)) !== null, "group-writable is refused");
+  ok(mnemonicFileProblem(F, f(0o440, 0, 989), D, d(0o550)) !== null, "0440 with a non-root group is refused");
+  ok(mnemonicFileProblem(F, f(0o440, 999, 0), D, d(0o550)) !== null, "0440 not owned by root is refused");
+  ok(mnemonicFileProblem(F, f(0o440), D, d(0o555)) !== null, "a credentials directory others can enter is refused");
+  ok(mnemonicFileProblem(F, f(0o440), D, d(0o550, 0, 989)) !== null, "a credentials directory with a non-root group is refused");
 }
 
 {

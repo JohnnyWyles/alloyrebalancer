@@ -25,6 +25,7 @@ import { CCTP, cctpSelfCheck, depositForBurnV2Calldata, orbiterMemo } from "./cc
 import { makeRunner, fitsFeeCap, loopLossBound, cycleLossBound, planRecovery, nextUtcMidnight, counterBehind } from "./cycle.mjs";
 import { readPool, deficit, sharePct, headroom, balances, refillGas, accountView } from "./chain.mjs";
 import { lockText, lockStatus, processFacts } from "./lock.mjs";
+import { mnemonicFileProblem } from "./credential.mjs";
 
 const { K, fmtUnits, setLog, PROVEN, sleep } = P;
 const argv = process.argv.slice(2), cmd = argv.find(a => !a.startsWith("--")) || "status", DRY = argv.includes("--dry-run");
@@ -141,8 +142,9 @@ function acknowledgeHalt(s) {
 function loadWallet() {
   const file = process.env.ALLOYBOT_MNEMONIC_FILE || (process.env.CREDENTIALS_DIRECTORY && path.join(process.env.CREDENTIALS_DIRECTORY, "mnemonic"));
   if (!file) throw new Error("set ALLOYBOT_MNEMONIC_FILE (or run under systemd with LoadCredential=mnemonic:...)");
-  const st = fs.statSync(file);
-  if (process.platform !== "win32" && (st.mode & 0o077)) throw new Error(`${file} is readable by group/other (mode ${(st.mode & 0o777).toString(8)}); chmod 600 it`);
+  const st = fs.statSync(file), credDir = process.env.CREDENTIALS_DIRECTORY;
+  const why = process.platform === "win32" ? null : mnemonicFileProblem(file, st, credDir, credDir ? fs.statSync(credDir) : null);
+  if (why) throw new Error(why);
   return deriveWallet(fs.readFileSync(file, "utf8"));
 }
 
