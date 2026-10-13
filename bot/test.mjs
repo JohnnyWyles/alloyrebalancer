@@ -592,5 +592,31 @@ const fresh = (amt = "100000000") => ({ cycle: { id: "t", amountIn: amt, idx: 0,
   ok(r.waitRetry && !r.halt, "a sighting of the funds resets the grace");
 }
 
+{
+  // REST endpoint ranking: Polkachu's Injective REST answered every request in ~20 s while the others took ~0.1 s,
+  // and as the first listed endpoint it sat in front of every Injective read (C3 took ~157 s)
+  const R = ["https://slow.example", "https://mid.example", "https://fast.example"];
+  ok(P.rankEndpoints(R, [{ ep: R[0], ms: 19800 }, { ep: R[1], ms: 170 }, { ep: R[2], ms: 100 }]).join() === [R[2], R[1], R[0]].join(), "fastest probe first");
+  ok(P.rankEndpoints(R, [{ ep: R[2], ms: 50 }, { ep: R[0], ms: 50 }]).join() === [R[0], R[2]].join(), "equal times keep the listed order; unproven endpoints are dropped");
+  const realFetch = globalThis.fetch, chain = "injective-1", saved = P.CHAIN[chain].rests, seen = [];
+  const res = j => ({ ok: true, status: 200, text: async () => JSON.stringify(j) });
+  try {
+    P.CHAIN[chain].rests = R; delete P.PROVEN[chain];
+    const delay = { [R[0]]: 80, [R[1]]: 30, [R[2]]: 5 };
+    globalThis.fetch = async (url, opts) => {
+      const ep = R.find(e => url.startsWith(e)); seen.push({ url, signal: opts?.signal });
+      if (url.endsWith("/node_info")) { await new Promise(r => setTimeout(r, delay[ep])); return res({ default_node_info: { network: chain } }); }
+      if (ep === R[2]) throw new Error("The operation was aborted due to timeout");   // the fastest prober hangs on reads
+      return res({ balance: { amount: "7" } });
+    };
+    const order = await P.proveEndpoints(chain);
+    ok(order.join() === [R[2], R[1], R[0]].join(), "proveEndpoints ranks the real probes fastest first");
+    ok(seen.every(x => x.signal instanceof AbortSignal), "probes carry a timeout signal");
+    const bal = await P.bankBalance(chain, "inj1x", "inj");
+    ok(bal === 7n && seen.at(-1).url.startsWith(R[1]) && seen.at(-1).signal instanceof AbortSignal, "a read that times out on one endpoint falls through to the next, with its own timeout");
+    ok(P.REST_TIMEOUT_MS === 15000, "reads time out after 15 s");
+  } finally { globalThis.fetch = realFetch; P.CHAIN[chain].rests = saved; delete P.PROVEN[chain]; }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

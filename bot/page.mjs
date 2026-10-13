@@ -23,11 +23,11 @@ const FNS = [
   "swapOps", "checkCommon", "checkSwap", "checkSwapAndAction", "parseJsonField", "transferOp", "abiWords", "abiDyn", "checkEvmTx", "approvalPlan",
   "checkHookTransfer", "singleCosmosMsg", "checkAxelarMemo", "checkOrbiterMemo", "validateNobleToHub", "validateHubToInj", "validateInjToAll", "validateGas",
   /* network reads */
-  "jget", "proveEndpoints", "lcdGet", "lcdPost", "bankBalance", "getAccount", "smartQuery", "assertChannel", "rpc", "erc20BalanceOf", "erc20Allowance",
+  "jget", "rankEndpoints", "proveEndpoints", "lcdGet", "lcdPost", "bankBalance", "getAccount", "smartQuery", "assertChannel", "rpc", "erc20BalanceOf", "erc20Allowance",
   "evmNative", "waitReceipt", "skipPost", "skipRoute", "skipTrack", "skipStatus", "waitSkip", "trackToCompletion", "gasPriceOf", "pubkeyTypeUrl", "txState", "waitArrival",
 ];
 const ARROWS = ["U64_MAX", "B32", "Any", "sortedJson", "Coin", "pad32", "sameAddr", "hexToBytes", "opKind", "nearly", "bridgeFee", "abiStr", "wordEq",
-  "approveCalldata", "refused", "PROVEN", "SKIP_OPTS", "TERMINAL"];
+  "approveCalldata", "refused", "PROVEN", "REST_TIMEOUT_MS", "restSignal", "SKIP_OPTS", "TERMINAL"];
 
 const src = [
   "const te = new TextEncoder();",

@@ -543,20 +543,30 @@ async function jget(url, opts) {
   if (!r.ok) throw new Error(j.message || j.error || `${r.status} from ${url}`);
   return j;
 }
+/* A REST read slower than this falls through to the next endpoint. Reads are tried in order and the first answer
+   wins, so one endpoint that answers correctly but slowly (one took ~20 s per request) would otherwise hold every
+   read behind it. Broadcasts are not given a timeout: an aborted POST can still have landed. */
+const REST_TIMEOUT_MS = 15000;
+const restSignal = () => AbortSignal.timeout(REST_TIMEOUT_MS);
+/* proven endpoints, fastest probe first; listed order breaks ties */
+function rankEndpoints(rests, ok) {
+  return ok.slice().sort((a, b) => a.ms - b.ms || rests.indexOf(a.ep) - rests.indexOf(b.ep)).map(o => o.ep);
+}
 async function proveEndpoints(chainId) {
   if (PROVEN[chainId]) return PROVEN[chainId];
   const rests = CHAIN[chainId].rests, ok = [];
   await Promise.all(rests.map(async ep => {
-    try { const j = await jget(ep + "/cosmos/base/tendermint/v1beta1/node_info"); if (j.default_node_info?.network === chainId) ok.push(ep); }
+    const t0 = Date.now();
+    try { const j = await jget(ep + "/cosmos/base/tendermint/v1beta1/node_info", { signal: restSignal() }); if (j.default_node_info?.network === chainId) ok.push({ ep, ms: Date.now() - t0 }); }
     catch (e) { log(`endpoint ${ep} skipped: ${e.message}`); }
   }));
   if (!ok.length) throw new Error(`no REST endpoint proved chain id ${chainId}`);
-  PROVEN[chainId] = rests.filter(e => ok.includes(e));
+  PROVEN[chainId] = rankEndpoints(rests, ok);
   return PROVEN[chainId];
 }
 async function lcdGet(chainId, path) {
   const eps = await proveEndpoints(chainId); let last;
-  for (const ep of eps) { try { return await jget(ep + path); } catch (e) { last = e; } }
+  for (const ep of eps) { try { return await jget(ep + path, { signal: restSignal() }); } catch (e) { last = e; } }
   throw last;
 }
 async function lcdPost(ep, path, body) { return jget(ep + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); }
