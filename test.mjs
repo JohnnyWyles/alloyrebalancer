@@ -48,19 +48,18 @@ const FNS = ["uint64Value","varint","cat","tag","bytesF","strF","u64F","Height",
              "b32Polymod","b32HrpExpand","bech32Decode","bech32Encode","convertBits","bech32Rehrp","bech32ToHex",
              "skipMsgToAny","swapOps","eip712MsgTypes","eip712Types","TxBody","checkCommon","checkSwap","checkSwapAndAction","parseJsonField","transferOp","abiWords","abiDyn","checkEvmTx","approvalPlan","decodeAxelarPayload","checkHookTransfer","singleCosmosMsg","checkAxelarMemo","addrsMismatch",
              "describeLimiter","variantConfigs",
-             "nomicEncodeIbc","scriptNum","pushData","nomicRedeemScript","nomicDepositAddress","sameSigset","chainflipMinPriceX128","checkChainflipChannel",
              "checkOrbiterMemo","validateNobleToHub","validateFreeExitToHub","validateHubToInj","validateInjToHub","validateHubToNoble","validateInjToAll","validateNobleToAll",
              "validateAxlUnwrapFor","validateEthToAlloyAxelar","checkEurekaAction","validateAtomUnwrap","validateEthToAlloyEureka","validateGas"];
 const src = [
   "const te = new TextEncoder();",
   extractFrom(/const K = /, "K"), extractFrom(/const GAS = /, "GAS"),
   arrow("U64_MAX"), arrow("B32"), arrow("Any"), arrow("sortedJson"), arrow("EIP712_DOMAIN"), arrow("EIP712_UINT64"), arrow("EIP712_MSG_TYPES"), arrow("eip712TypeName"), arrow("Coin"), arrow("pad32"), arrow("sameAddr"), arrow("hexToBytes"), arrow("opKind"), arrow("nearly"), arrow("limiterDenom"), arrow("bridgeFee"),
-  arrow("OPC"), arrow("sha256"), arrow("nomicWithdrawMemo"), arrow("abiStr"), arrow("wordEq"),
+  arrow("abiStr"), arrow("wordEq"),
   "const esc = s => String(s).replace(/[&<>\\\"']/g, c => ({\"&\":\"&amp;\",\"<\":\"&lt;\",\">\":\"&gt;\",'\"':\"&quot;\",\"'\":\"&#39;\"}[c]));",
   "const unb64 = s => Uint8Array.from(Buffer.from(s, 'base64'));",
   ...FNS.map(fn),
   arrow("validateAxlUnwrap"), arrow("validateEthToAll"),
-  `export {K,GAS,${FNS.join(",")},Any,Coin,sortedJson,EIP712_DOMAIN,eip712TypeName,pad32,sameAddr,nearly,limiterDenom,validateAxlUnwrap,validateEthToAll,nomicWithdrawMemo};`,
+  `export {K,GAS,${FNS.join(",")},Any,Coin,sortedJson,EIP712_DOMAIN,eip712TypeName,pad32,sameAddr,nearly,limiterDenom,validateAxlUnwrap,validateEthToAll};`,
 ].join("\n");
 const tmp = path.join(process.cwd(), ".test-extract.mjs");
 fs.writeFileSync(tmp, src);
@@ -133,46 +132,6 @@ const G = FIX("golden.json");
   const cd = M.peggySendCalldata("0xdac17f958d2ee523a2206206994597c13d831ec7", "0x000000000000000000000000000000000000dead", "1000000000");
   const words = cd.slice(2 + 8).match(/.{64}/g);
   ok(cd.startsWith("0x" + M.K.PEGGY_SEND_SELECTOR) && words.length === 5 && words[0].endsWith("dac17f958d2ee523a2206206994597c13d831ec7") && words[1].endsWith("dead") && BigInt("0x" + words[2]) === 1000000000n && BigInt("0x" + words[3]) === 0x80n && BigInt("0x" + words[4]) === 0n, "sendToInjective calldata: selector, token, bytes32 destination, amount, empty string");
-}
-
-/* ---------- Nomic deposit address derivation (reference values from the official nomic-bitcoin library run against
-   this exact signatory set through a mock relayer: same broadcast bytes, same address) ---------- */
-{
-  const sigset = FIX("nomic-sigset.json");
-  const dest = { sourcePort: "transfer", sourceChannel: "channel-1", receiver: "osmo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqph4dauqjkl", sender: "nomic1qqqqqqqqqqqqqqqqqqqqqqqqqqqqph4dflqcn8", memo: "", timeoutTimestamp: "1788354000000000000" };
-  const r = await M.nomicDepositAddress(sigset, dest);
-  ok(r.address === "bc1q2l84ujyh2r6qzwxl483t69fgjtds0kjskf4kzpexruwjl3tk2gfsagmfcw", "Nomic deposit address == nomic-bitcoin-js reference (" + r.address + ")");
-  ok(r.broadcastBytes[0] === 1 && r.broadcastBytes.length === 1 + 1 + 8 + 1 + 9 + 1 + 43 + 1 + 44 + 8 + 2, "broadcast bytes: 0x01 || encoded IBC destination");
-  ok(M.bech32Rehrp("osmo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqph4dauqjkl", "nomic") === dest.sender, "Nomic sender is the same key re-prefixed");
-  ok(M.nomicWithdrawMemo("bc1qxyz") === '{"type":"bitcoin","data":"bc1qxyz"}', "withdrawal memo shape");
-  ok([0, 1, 16, 17, 127, 128, 255, 256, 32767, 32768, 8388607, -1].map(n => Buffer.from(M.scriptNum(n)).toString("hex")).join(",") === ",01,10,11,7f,8000,ff00,0001,ff7f,008000,ffff7f,81", "script numbers match bitcoinjs encoding");
-  ok(Buffer.from(M.pushData(new Uint8Array(0))).toString("hex") === "00" && Buffer.from(M.pushData(Uint8Array.of(7))).toString("hex") === "57" && Buffer.from(M.pushData(Uint8Array.of(0x81))).toString("hex") === "4f" && Buffer.from(M.pushData(Uint8Array.of(0x11))).toString("hex") === "0111", "minimal push opcodes");
-  const other = JSON.parse(JSON.stringify(sigset)); other.signatories[3].voting_power = String(BigInt(other.signatories[3].voting_power) + 1n);
-  ok(M.sameSigset(sigset, JSON.parse(JSON.stringify(sigset))) && !M.sameSigset(sigset, other), "relayer consensus compares the signatory set exactly");
-  const r2 = await M.nomicDepositAddress(other, dest);
-  ok(r2.address === r.address, "a voting-power change below the script's truncation leaves the address unchanged (why consensus must compare the set, not the address)");
-  const other2 = JSON.parse(JSON.stringify(sigset)); other2.signatories[3].pubkey[5] ^= 1;
-  const r4 = await M.nomicDepositAddress(other2, dest);
-  ok(r4.address !== r.address, "a different signatory pubkey yields a different address");
-  const r3 = await M.nomicDepositAddress(sigset, { ...dest, receiver: "osmo1z6r6qdknhgsc0zeracktgpcxf43j6sekq07nw8sxduc9lg0qjjlqfu25e3" });
-  ok(r3.address !== r.address, "a different receiver yields a different address");
-}
-/* ---------- Chainflip ---------- */
-{
-  const q = FIX("chainflip-quote-wbtc-btc.json").find(x => x.type === "REGULAR"), st = FIX("chainflip-status-good.json"), ch = FIX("chainflip-channel-good.json");
-  const x128 = M.chainflipMinPriceX128(q.estimatedPrice, q.recommendedSlippageTolerancePercent, 8, 8);
-  const back = Number(BigInt(x128) * 10n ** 20n / (1n << 128n)) / 1e20;
-  ok(Math.abs(back - Number(st.fillOrKillParams.minPrice)) < 1e-12, `minPriceX128 round-trips to the minPrice Chainflip recorded (${back})`);
-  const exp = { srcChain: "Ethereum", srcAsset: "WBTC", destChain: "Bitcoin", destAsset: "BTC", destAddress: "bc1q2l84ujyh2r6qzwxl483t69fgjtds0kjskf4kzpexruwjl3tk2gfsagmfcw", amount: "10000000", depositAddress: ch.depositAddress, id: ch.id, refundAddress: "0x000000000000000000000000000000000000dead", retryDurationBlocks: 150, minPriceX128: x128 };
-  const errs = []; M.checkChainflipChannel(errs, st, exp); ok(!errs.length, "channel status accepted" + (errs.length ? " -> " + errs.join(" | ") : ""));
-  const bad = (f, re, label) => { const e = []; const s2 = JSON.parse(JSON.stringify(st)); const x = { ...exp }; f(s2, x); M.checkChainflipChannel(e, s2, x); ok(e.some(m => re.test(m)), label + (e.length ? "" : " (ACCEPTED)")); };
-  bad((s2) => { s2.destAddress = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"; }, /pays to/, "channel paying elsewhere refused");
-  bad((s2) => { s2.depositChannel.depositAddress = "0x000000000000000000000000000000000000beef"; }, /deposit address/, "deposit address mismatch refused");
-  bad((s2) => { s2.depositChannel.expectedDepositAmount = "20000000"; }, /expected deposit/, "amount mismatch refused");
-  bad((s2) => { s2.depositChannel.isExpired = true; }, /expired/, "expired channel refused");
-  bad((s2) => { s2.destAsset = "ETH"; }, /destination/, "wrong destination asset refused");
-  bad((s2) => { s2.fillOrKillParams.refundAddress = "0x000000000000000000000000000000000000beef"; }, /refund/, "refund to someone else refused");
-  bad((s2, x) => { x.id = "1-Ethereum-2"; }, /channel id/, "channel id mismatch refused");
 }
 
 /* ---------- bech32 / hex ---------- */
@@ -462,19 +421,6 @@ refused("C3: recipient is not my Injective account", M.validateHubToInj(cc3, { .
     const r2 = M.abiWords(x2.txs[0].evm_tx.data); ok(r2.sel === M.K.EUREKA_SELECTOR && r2.w.length === 59, "abiWords splits selector and words");
     ok(M.abiDyn(r2.body, 1000000) === null && M.abiDyn("00", 0) === null, "abiDyn refuses offsets outside the data"); }
 }
-/* ----- review findings: Chainflip fill-or-kill is mandatory and compared ----- */
-{
-  const st = FIX("chainflip-status-good.json"), ch = FIX("chainflip-channel-good.json"), q = FIX("chainflip-quote-wbtc-btc.json").find(x => x.type === "REGULAR");
-  const x128 = M.chainflipMinPriceX128(q.estimatedPrice, q.recommendedSlippageTolerancePercent, 8, 8);
-  const exp = { srcChain: "Ethereum", srcAsset: "WBTC", destChain: "Bitcoin", destAsset: "BTC", destAddress: st.destAddress, amount: "10000000", depositAddress: ch.depositAddress, id: ch.id, refundAddress: "0x000000000000000000000000000000000000dead", retryDurationBlocks: 150, minPriceX128: x128 };
-  { const e = []; M.checkChainflipChannel(e, st, exp); ok(!e.length, "channel with matching fill-or-kill accepted" + (e.length ? " -> " + e.join(" | ") : "")); }
-  const bad = (f, re, label) => { const e = []; const s2 = JSON.parse(JSON.stringify(st)); const x = { ...exp }; f(s2, x); M.checkChainflipChannel(e, s2, x); ok(e.some(m => re.test(m)), label + (e.length ? "" : " (ACCEPTED)")); };
-  bad(s2 => { delete s2.fillOrKillParams; }, /no fill-or-kill/, "missing fill-or-kill refused");
-  bad(s2 => { s2.fillOrKillParams.retryDurationBlocks = 10; }, /retry window/, "retry window mismatch refused");
-  bad(s2 => { s2.fillOrKillParams.minPrice = "0.5"; }, /minimum price/, "weaker minimum price refused");
-  bad(s2 => { delete s2.fillOrKillParams.minPrice; }, /no minimum price/, "absent minimum price refused");
-  bad(s2 => { delete s2.depositChannel.openedThroughBackend; }, /provenance/, "unknown provenance refused");
-}
 /* ----- allowance sequencing (USDT refuses nonzero -> nonzero) ----- */
 ok(JSON.stringify(M.approvalPlan("0", "100")) === '["100"]', "no allowance: one approve");
 ok(JSON.stringify(M.approvalPlan("40", "100")) === '["0","100"]', "partial stale allowance: reset to zero, then approve");
@@ -483,12 +429,11 @@ ok(!/eth\("eth_sendTransaction"/.test(fn("sendSkipEvm")) && /evmSend\(/.test(fn(
 /* ----- review findings: limiter labels are escaped, cycles are bound to addresses ----- */
 ok(M.describeLimiter([["d", "<img src=x onerror=alert(1)>"], { static_limiter: { upper_limit: "0.5" } }]) === "static ≤ 50.0% (&lt;img src=x onerror=alert(1)&gt;)", "contract-controlled limiter label is escaped");
 {
-  const rec = { osmo: OSMO20, inj: INJ, noble: NOBLE20, hub: HUB20, evm: EVM, btc: "bc1qtest" };
-  ok(M.addrsMismatch(rec, { ...rec }, true) === null, "same addresses continue");
-  ok(/osmo address changed/.test(M.addrsMismatch(rec, { ...rec, osmo: OSMO32 }, false)), "changed Osmosis account refused");
-  ok(/evm address changed/.test(M.addrsMismatch(rec, { ...rec, evm: "0x000000000000000000000000000000000000beef" }, false)), "changed EVM account refused");
-  ok(M.addrsMismatch(rec, { ...rec, btc: "bc1qother" }, false) === null && /Bitcoin address changed/.test(M.addrsMismatch(rec, { ...rec, btc: "bc1qother" }, true)), "Bitcoin address only matters for BTC plans");
-  ok(/predates/.test(M.addrsMismatch(undefined, rec, false)), "a cycle without recorded addresses cannot continue");
+  const rec = { osmo: OSMO20, inj: INJ, noble: NOBLE20, hub: HUB20, evm: EVM };
+  ok(M.addrsMismatch(rec, { ...rec }) === null, "same addresses continue");
+  ok(/osmo address changed/.test(M.addrsMismatch(rec, { ...rec, osmo: OSMO32 })), "changed Osmosis account refused");
+  ok(/evm address changed/.test(M.addrsMismatch(rec, { ...rec, evm: "0x000000000000000000000000000000000000beef" })), "changed EVM account refused");
+  ok(/predates/.test(M.addrsMismatch(undefined, rec)), "a cycle without recorded addresses cannot continue");
 }
 
 /* ----- gas purchases ----- */

@@ -1,14 +1,13 @@
 # Alloy Rebalancer
 
 **Status: alpha, unaudited.** No route has been exercised end to end with a live wallet yet. Use small
-amounts; routes through Nomic, Chainflip or Injective's Peggy bridge are additionally capped and need an
+amounts; routes through Injective's Peggy bridge are additionally capped and need an
 explicit acknowledgement in the page.
 
 Browser tool that shifts the backing of an Osmosis alloy (transmuter pool) from one variant to another
 by taking one variant out, bridging it, and depositing another back in, so the alloy's composition moves
 while your alloy balance stays the same, minus gas and bridge fees. Keplr signs everything: Osmosis,
-Injective and Noble directly, Avalanche, Ethereum and Injective EVM through Keplr's EVM provider, and
-Bitcoin through Keplr's Bitcoin provider.
+Injective and Noble directly, and Avalanche, Ethereum and Injective EVM through Keplr's EVM provider.
 
 Ledger keys behind Keplr are supported. On Osmosis and Noble the page signs legacy amino JSON (the only
 mode the Ledger Cosmos app accepts; the device may need Expert mode for larger contract messages). On
@@ -17,8 +16,7 @@ Injective it signs EIP-712 typed data through the Ledger Ethereum app (Keplr's
 `ExtensionOptionsWeb3Tx` with `typedDataChainID` 1, and IBC transfers get a fully nonzero timeout height
 because the chain's typed-data encoder refuses omitted zero fields. The generated typed data is tested
 byte-for-byte against Injective's own web3gw `PrepareEip712` responses (`test-fixtures/eip712-golden-*`).
-The Ethereum app may need blind signing enabled. The Bitcoin routes still need a mnemonic-backed account
-(Keplr has no Ledger Bitcoin provider). EVM signatures go through Keplr's EVM provider either way.
+The Ethereum app may need blind signing enabled. EVM signatures go through Keplr's EVM provider either way.
 A full USDC.noble -> USDC.inj loop has run on a live Ledger (amino on Osmosis, EVM on Avalanche, EIP-712
 on Injective); the Peggy `MsgSendToEth` leg is the one Ledger signature not yet exercised.
 
@@ -27,8 +25,8 @@ on Injective); the Peggy `MsgSendToEth` leg is the one Ledger signature not yet 
 | File | What it is |
 | --- | --- |
 | `index.html` | The tool. Single dependency-free file, no build step. |
-| `test.mjs` | Regression suite: encoder bytes against reference implementations, bech32 and Nomic derivations, and every route validator against saved Skip, Chainflip and Nomic responses. `node test.mjs` |
-| `test-fixtures/` | Real API responses (good routes and the ones that must be refused), the Nomic signatory set the derivation is checked against, and reference bytes for the encoders. |
+| `test.mjs` | Regression suite: encoder bytes against reference implementations, bech32 derivations, and every route validator against saved Skip responses. `node test.mjs` |
+| `test-fixtures/` | Real API responses (good routes and the ones that must be refused) and reference bytes for the encoders. |
 | `serve.cmd` | Serves this folder on `127.0.0.1:8900`. Local only, deliberately. |
 | `LICENSE` | Apache 2.0. |
 
@@ -87,34 +85,12 @@ An inactive transmuter or a corrupted variant marks the alloy FROZEN in the pool
 variant in its row, and disables starting any stage for that alloy; a cycle already in flight keeps its
 recorded state and can Continue once the alloy is active again.
 
-No other variant of these alloys has a bridge route in Skip: nBTC (Nomic), ckBTC (Internet Computer),
+No other variant of these alloys has a bridge route in Skip: ckBTC (Internet Computer),
 the Osmosis-minted WBTC, cbBTC.axl (a different token), USDT.eth.inj (Injective's Peggy bridge). Alloyed
 SOL has a single variant and is composition view only.
 
-**Alloyed BTC's Nomic variant (nBTC)** has no Skip route, so its legs are built here from three pieces, all
-of them verified as far as they can be without spending funds:
-
-| Reduce → increase | Legs |
-| --- | --- |
-| axl → nBTC, atom → nBTC | Axelar or Eureka unwrap to Ethereum WBTC; then one Ethereum ERC20 transfer of WBTC into a Chainflip deposit channel whose destination is a freshly derived **Nomic deposit address**; Chainflip pays BTC there, Nomic mints nBTC and IBC-delivers it to your Osmosis address; Osmosis pool swap into allBTC (1:1 in BTC terms, nBTC has 14 decimals to allBTC's 8) |
-| nBTC → axl, nBTC → atom | Osmosis own tx (pool swap into nBTC + IBC to Nomic over `channel-6897` with memo `{"type":"bitcoin","data":"<your Keplr Bitcoin address>"}`), Nomic pays BTC out in its next checkpoint; Keplr Bitcoin sends that BTC into a Chainflip channel paying WBTC to your Ethereum address; Axelar or Eureka wrap into the alloy |
-
-Nomic deposit addresses are derived in the page (a P2WSH over Nomic's weighted signatory set committing to the
-IBC destination), reimplemented from `nomic-bitcoin-js` and checked in the test suite against that library's
-output for the same signatory set: identical broadcast bytes, identical address. Every relayer in the pinned
-list (`relayer.nomic.io`, `relayer.nomic.mappum.io`) must return the same signatory set and accept the
-address, or nothing is derived; an address Nomic never learns about swallows the deposit. Chainflip channels
-are opened through Chainflip's public backend (`/api/openSwapDepositChannel`, 30 bps commission) and trusted
-only after its status endpoint echoes back the destination, deposit address, amount and refund address that
-were asked for. Chainflip is a market swap: roughly $8 network fee plus slippage (a fill-or-kill minimum
-price at the quote's recommended tolerance protects the floor, refunds go to your own address). Nomic charges
-miner fees and, on IBC deposits to Osmosis, a 0% bridge fee at the time of writing (1.5% elsewhere). Expect
-hours: Bitcoin confirmations for Chainflip and Nomic, and Nomic's checkpoint cadence for withdrawals. Keplr's
-Bitcoin provider (`window.bitcoin_keplr`) supplies the Bitcoin address and signs the one BTC send.
-
-Assumptions still to be confirmed with a small live run: that Nomic's checkpoint pays out to a taproot
-(`bc1p…`) address, which is what Keplr Bitcoin uses by default; Nomic's minimum withdrawal; and that Keplr's
-Bitcoin account is funded enough for one miner fee on the send.
+Alloyed BTC's Nomic variant (nBTC) had its own route through Chainflip and Nomic. nBTC was removed from
+Alloyed BTC on 2026-10-28, so that route was dropped.
 
 ### Routes still to build
 
@@ -163,7 +139,7 @@ The alloy selector offers a pinned set (Alloyed BTC, ETH, SOL, USDC, USDT and XR
 address) rather than discovering pools at load. The composition comes from the contract's
 `list_asset_configs` (the valid variants and their normalisation factors), not from what the contract
 happens to hold. Variant names and decimals come from the generated frontend assetlist in osmosis-labs/assetlists
-(USDC.noble, nBTC and so on), with Skip's registry as the fallback if GitHub is unreachable. The table shows each variant's balance, its share in the transmuter's normalised units (variants can carry different exponents), any
+(USDC.noble, USDT.eth.inj and so on), with Skip's registry as the fallback if GitHub is unreachable. The table shows each variant's balance, its share in the transmuter's normalised units (variants can carry different exponents), any
 limiter configured for it, and a bar of the distribution. Bridge plans exist for Alloyed USDC, USDT, BTC and ETH; Alloyed SOL and XRP are composition view only.
 
 **Let Skip choose the exit route** is an opt-in toggle for the exits that go out through USDC.noble. Off
@@ -203,17 +179,14 @@ then fail at route validation.
   approval, as USDT requires.
 - **A recorded transaction is never re-signed automatically.** Each stage records the hash and the chain it
   was broadcast on the moment the hash exists. On resume the page classifies it as included, pending,
-  failed or unknown (Cosmos via the tx endpoint, EVM via receipt and `eth_getTransactionByHash`, Bitcoin
-  via mempool.space). Included or pending: it waits. Failed or unknown: it stops and explains; discarding
+  failed or unknown (Cosmos via the tx endpoint, EVM via receipt and `eth_getTransactionByHash`).
+  Included or pending: it waits. Failed or unknown: it stops and explains; discarding
   the record is a separate button behind a confirmation, because "unknown" is not proof it will not land.
-- **Cycles are bound to the wallets that started them.** The Osmosis, Injective, Noble, Hub, EVM and (for
-  BTC plans) Bitcoin addresses are recorded; if any differs on Continue, the cycle refuses to proceed
+- **Cycles are bound to the wallets that started them.** The Osmosis, Injective, Noble, Hub and EVM
+  addresses are recorded; if any differs on Continue, the cycle refuses to proceed
   rather than spending another account's balance while the earlier transfer sits at the old one.
 - **Balance baselines never default to zero.** A failed balance read stops the stage; the arrival check is
   always "rose by the quoted amount from a real baseline".
-- **Chainflip channels must carry fill-or-kill protection** equal to what was requested (refund address,
-  retry window, minimum price within 1e-9) and be provably opened through Chainflip's backend, or the
-  deposit is not sent.
 - **Pool state fails closed.** An alloy is marked unavailable while its state is being read and stays that
   way if any safety-critical query (composition, `is_active`, corrupted denoms) fails.
 - Contract-controlled text (limiter labels) is escaped before it reaches the page; the confirmation sheet's
@@ -223,8 +196,7 @@ then fail at route validation.
 
 Protobuf encoding is hand-written and verified against reference implementations: `MsgTransfer` and
 `MsgExecuteContract` against `cosmjs-types`, `MsgSwapExactAmountIn` and `MsgSendToEth` against the chains'
-own `/cosmos/tx/v1beta1/decode`. Nomic deposit addresses are checked against `nomic-bitcoin-js` output
-for the same signatory set. The Peggy selector is checked against `keccak256` of its canonical signature
+own `/cosmos/tx/v1beta1/decode`. The Peggy selector is checked against `keccak256` of its canonical signature
 by a keccak implementation in the test suite. All signing is `SIGN_MODE_DIRECT`; Injective's
 `EthAccount` wrapper and `ethsecp256k1` pubkey type are handled explicitly.
 

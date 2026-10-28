@@ -84,7 +84,7 @@
 
 <div class="warnbox" style="margin:0 0 16px">
   <b>Alpha, unaudited.</b> Every route is verified against decoded payloads and reference implementations, but no route has yet
-  been exercised end to end with a live wallet by anyone but you. Use small amounts first. Routes through Nomic, Chainflip or Injective's
+  been exercised end to end with a live wallet by anyone but you. Use small amounts first. Routes through Injective's
   Peggy bridge are marked <b>experimental</b>, capped, and need an explicit acknowledgement before they will start.
 </div>
 
@@ -96,7 +96,6 @@
     <tr><td>Ethereum</td><td id="ethSym">USDC</td><td class="num" id="bal_eth">–</td><td class="num" id="gas_eth">–</td><td><button class="small" data-fund="eth" disabled>Fund gas (5)</button></td></tr>
     <tr><td>Injective</td><td id="injSym">USDC.inj</td><td class="num" id="bal_inj">–</td><td class="num" id="gas_inj">–</td><td><button class="small" data-fund="inj" disabled>Fund gas</button></td></tr>
     <tr><td>Noble</td><td>USDC</td><td class="num" id="bal_noble">–</td><td class="num" id="gas_noble">–</td><td><button class="small" data-fund="noble" disabled>Fund gas</button></td></tr>
-    <tr id="row_btc" style="display:none"><td>Bitcoin</td><td>BTC (Keplr)</td><td class="num" id="bal_btc">–</td><td class="num muted">miner fees from balance</td><td></td></tr>
   </tbody></table>
   <div class="muted" style="font-size:.78rem;margin-top:6px">Fund gas swaps 1 allUSDC (5 for Ethereum, since Axelar's flat fee is about $1.10) into that chain's fee token and delivers it to your address there. Noble charges fees in USDC.</div>
   <div id="strandedBox"></div>
@@ -190,14 +189,6 @@ const K = {
   PEGGY_ETH: "0xF955C57f9EA9Dc8781965FEaE0b6A2acE2BAD6f3",      // Peggy contract on Ethereum (from Injective's peggy params)
   PEGGY_SEND_SELECTOR: "b24614f2",                                // sendToInjective(address,bytes32,uint256,string)
   PEGGY_BRIDGE_FEE_USDT: "5000000",                               // 5 USDT: what relayers were accepting for USDT withdrawals when this was written
-  OSMO_TO_NOMIC: "channel-6897", NOMIC_TO_OSMO: "channel-1",
-  /* Nomic (nBTC) and Chainflip (WBTC <-> BTC), the pieces behind WBTC.eth.axl <-> nBTC */
-  NOMIC_RELAYERS: ["https://relayer.nomic.io:8443", "https://relayer.nomic.mappum.io:8443"],   // ALL must serve the same signatory set and accept the address
-  NBTC: "ibc/75345531D87BD90BF108BE7240BD721CB2CB0A1F16D4EBA71B09EC3C43E15C8F",   // nBTC on Osmosis, 14 decimals (1 sat = 1e6 units)
-  CHAINFLIP: "https://chainflip-swap.chainflip.io",
-  CHAINFLIP_RETRY_BLOCKS: 150,          // fill-or-kill retry window (~15 min of Chainflip blocks) before a refund
-  MEMPOOL: "https://mempool.space/api",
-  ERC20_TRANSFER_SELECTOR: "a9059cbb",  // transfer(address,uint256)
   /* What Skip's EVM adapters are called with, decoded and allowlisted argument by argument (see checkEvmTx) */
   CCTP_DOMAIN: { "1": 0, "43114": 1, "noble-1": 4, "1776": 29 },
   CCTP_V2_SELECTOR: "d1cc447d", CCTP_V1_SELECTOR: "d77d6ec0", AXELAR_SELECTOR: "d421c105", EUREKA_SELECTOR: "eecf31f9",
@@ -242,7 +233,7 @@ const K = {
   /* Alloyed USDT's Injective variant: Ethereum USDT over Peggy. Skip does not drive Peggy, so these legs are built here. */
   PEGGY_PAIR: { alloySym: "allUSDT", inj: "ibc/2AD3C64D19ADFBB522CD738B58F421102143F827C1CAFF574A8BF0B81017D53D", injDenom: "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7", token: "0xdac17f958d2ee523a2206206994597c13d831ec7", sym: "USDT", dec: 6 },
   /* Alloys whose Axelar variant and Cosmos Hub (Eureka) variant are the same Ethereum token: those two can be exchanged
-     through Ethereum with Skip. nBTC and USDT.eth.inj have their own bridges below; the remaining variants have none. */
+     through Ethereum with Skip. USDT.eth.inj has its own bridge below; the remaining variants have none. */
   ETH_PAIRS: {
     allBTC:  { axl: "ibc/D1542AA8762DB13087D8364F3EA6509FD6F009A34F00426AF9E4F9FA85CBBF1F", atom: "ibc/88386AC48152D48B34B082648DF836F975506F0B57DBBFC10A54213B1BF484CB", token: "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599", sym: "WBTC", dec: 8 },
     allETH:  { axl: "ibc/EA1D43981D5C9A1C4AAEA9C23BB1D4FA126BA9BC7020A25E0AE4AA841EA25DC5", atom: "ibc/20850C646CDDDC2270E9BBDB08558B5FEE57B647EC6827F41096AABFD8A0471B", token: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", sym: "WETH", dec: 18 },
@@ -252,7 +243,7 @@ const K = {
 };
 /* the alloys offered: denom -> {denom, sym, pool, contract, dec}; FROZEN[denom] carries the reason cycling is disabled */
 const ALLOYS = {}; let ALLOY = K.ALL; const FROZEN = {};
-/* names and decimals come from the Osmosis frontend assetlist, which qualifies every variant (USDC.noble, nBTC, ...) */
+/* names and decimals come from the Osmosis frontend assetlist, which qualifies every variant (USDC.noble, USDT.eth.inj, ...) */
 const symOf = d => ASSETS[d]?.symbol || (d.includes("/") ? d.split("/").pop() : d);
 const alloyName = a => "Alloyed " + a.sym.replace(/^all/, "");
 /* gas purchases: what is bought, with how much allUSDC, and the least USD value acceptable back */
@@ -439,97 +430,6 @@ function skipMsgToAny(m) {
   throw new Error("refusing to encode unexpected message type " + m.msg_type_url);
 }
 
-/* ---------------- Nomic deposit addresses (reimplemented from nomic-bitcoin-js; byte-identical in test) ----------------
-   A deposit address commits to an IBC destination: BTC sent to it is minted as nBTC and IBC-transferred to `receiver`
-   on Osmosis. The address is a P2WSH of a weighted multisig over Nomic's current signatory set with the commitment
-   pushed and dropped. Every relayer in K.NOMIC_RELAYERS must return the same signatory set and accept the address,
-   because an address Nomic never learns about swallows the deposit. */
-function nomicEncodeIbc(d) {
-  const str = x => cat(Uint8Array.of(x.length), te.encode(x));
-  const ts = new Uint8Array(8); new DataView(ts.buffer).setBigUint64(0, BigInt(d.timeoutTimestamp));
-  const ml = new Uint8Array(2); new DataView(ml.buffer).setUint16(0, d.memo.length);
-  return cat(str(d.sourcePort), str(d.sourceChannel), str(d.receiver), str(d.sender), ts, ml, te.encode(d.memo));
-}
-/* Bitcoin script number: minimal little-endian, sign bit in the top bit of the last byte */
-function scriptNum(n) {
-  n = BigInt(n); if (n === 0n) return new Uint8Array(0);
-  const neg = n < 0n; let v = neg ? -n : n; const out = [];
-  while (v > 0n) { out.push(Number(v & 0xffn)); v >>= 8n; }
-  if (out[out.length - 1] & 0x80) out.push(neg ? 0x80 : 0x00); else if (neg) out[out.length - 1] |= 0x80;
-  return Uint8Array.from(out);
-}
-/* data push with bitcoinjs' minimal encoding: empty -> OP_0, 1..16 -> OP_1..OP_16, 0x81 -> OP_1NEGATE, else pushdata */
-function pushData(b) {
-  if (b.length === 0) return Uint8Array.of(0x00);
-  if (b.length === 1 && b[0] >= 1 && b[0] <= 16) return Uint8Array.of(0x50 + b[0]);
-  if (b.length === 1 && b[0] === 0x81) return Uint8Array.of(0x4f);
-  if (b.length < 0x4c) return cat(Uint8Array.of(b.length), b);
-  if (b.length <= 0xff) return cat(Uint8Array.of(0x4c, b.length), b);
-  return cat(Uint8Array.of(0x4d, b.length & 0xff, b.length >> 8), b);
-}
-const OPC = { CHECKSIG: 0xac, IF: 0x63, ELSE: 0x67, ENDIF: 0x68, ZERO: 0x00, SWAP: 0x7c, ADD: 0x93, GREATERTHAN: 0xa0, DROP: 0x75 };
-function nomicRedeemScript(sigset, commitment) {
-  const vp = sigset.signatories.reduce((a, x) => a + BigInt(x.voting_power), 0n);
-  const vpBits = vp === 0n ? 0 : vp.toString(2).length;
-  const trunc = BigInt(vpBits < 23 ? 0 : vpBits - 23);
-  const [num, den] = sigset.threshold;
-  const parts = [], first = sigset.signatories[0];
-  parts.push(pushData(Uint8Array.from(first.pubkey)), Uint8Array.of(OPC.CHECKSIG, OPC.IF), pushData(scriptNum(BigInt(first.voting_power) >> trunc)), Uint8Array.of(OPC.ELSE, OPC.ZERO, OPC.ENDIF));
-  for (const x of sigset.signatories.slice(1)) parts.push(Uint8Array.of(OPC.SWAP), pushData(Uint8Array.from(x.pubkey)), Uint8Array.of(OPC.CHECKSIG, OPC.IF), pushData(scriptNum(BigInt(x.voting_power) >> trunc)), Uint8Array.of(OPC.ADD, OPC.ENDIF));
-  parts.push(pushData(scriptNum((vp * BigInt(num) / BigInt(den)) >> trunc)), Uint8Array.of(OPC.GREATERTHAN), pushData(commitment), Uint8Array.of(OPC.DROP));
-  return cat(...parts);
-}
-const sha256 = async b => new Uint8Array(await crypto.subtle.digest("SHA-256", b));
-async function nomicDepositAddress(sigset, ibcDest) {
-  const broadcastBytes = cat(Uint8Array.of(1), nomicEncodeIbc(ibcDest));
-  const commitment = cat(Uint8Array.of(0), await sha256(broadcastBytes));
-  const script = nomicRedeemScript(sigset, commitment);
-  return { address: bech32Encode("bc", [0].concat(convertBits(await sha256(script), 8, 5, true))), broadcastBytes };
-}
-const nomicWithdrawMemo = btcAddress => JSON.stringify({ type: "bitcoin", data: btcAddress });
-/* the same signatory set from every relayer, or nothing */
-function sameSigset(a, b) { return a.index === b.index && JSON.stringify(a.threshold) === JSON.stringify(b.threshold) && JSON.stringify(a.signatories) === JSON.stringify(b.signatories); }
-/* Chainflip: fill-or-kill minimum price as X128, matching the SDK's arithmetic (same decimals on both sides for WBTC/BTC) */
-function chainflipMinPriceX128(estimatedPrice, tolerancePercent, srcDec, dstDec) {
-  const [ip, fp = ""] = String(estimatedPrice).split("."); const scale = 30n;
-  const price = BigInt(ip + fp.padEnd(Number(scale), "0").slice(0, Number(scale)));                 // price * 10^30
-  const tol = BigInt(Math.round(tolerancePercent * 1000));                                          // percent * 1000
-  const minPrice = price * (100000n - tol) / 100000n;                                              // still * 10^30
-  let x = minPrice * (1n << 128n);
-  const shift = dstDec - srcDec; if (shift >= 0) x *= 10n ** BigInt(shift); else x /= 10n ** BigInt(-shift);
-  return (x / 10n ** scale).toString();
-}
-/* a Chainflip deposit channel is trusted only after the status endpoint echoes back exactly what was asked for */
-function checkChainflipChannel(errs, status, exp) {   // exp: {srcChain, srcAsset, destChain, destAsset, destAddress, amount, depositAddress, id}
-  if (!status) { errs.push("no channel status"); return; }
-  if (status.srcChain !== exp.srcChain || status.srcAsset !== exp.srcAsset) errs.push(`channel source ${status.srcChain}.${status.srcAsset} != ${exp.srcChain}.${exp.srcAsset}`);
-  if (status.destChain !== exp.destChain || status.destAsset !== exp.destAsset) errs.push(`channel destination ${status.destChain}.${status.destAsset} != ${exp.destChain}.${exp.destAsset}`);
-  if (!sameAddr(status.destAddress, exp.destAddress)) errs.push(`channel pays to ${status.destAddress}, not ${exp.destAddress}`);
-  const dc = status.depositChannel || {};
-  if (dc.id !== exp.id) errs.push(`channel id ${dc.id} != ${exp.id}`);
-  if (!sameAddr(dc.depositAddress, exp.depositAddress)) errs.push(`deposit address ${dc.depositAddress} != ${exp.depositAddress}`);
-  if (String(dc.expectedDepositAmount) !== String(exp.amount)) errs.push(`expected deposit ${dc.expectedDepositAmount} != ${exp.amount}`);
-  if (dc.isExpired) errs.push("channel already expired");
-  if (dc.openedThroughBackend !== true) errs.push("channel provenance is not Chainflip's backend");
-  const fk = status.fillOrKillParams;
-  if (!fk) errs.push("channel has no fill-or-kill parameters: no price floor, no refund");
-  else {
-    if (!sameAddr(fk.refundAddress, exp.refundAddress)) errs.push(`refund address ${fk.refundAddress} is not yours`);
-    if (Number(fk.retryDurationBlocks) !== Number(exp.retryDurationBlocks)) errs.push(`retry window ${fk.retryDurationBlocks} blocks != ${exp.retryDurationBlocks}`);
-    if (exp.minPriceX128 !== undefined) {
-      const recorded = fk.minPrice !== undefined ? fk.minPrice : null;
-      if (recorded === null) errs.push("channel records no minimum price");
-      else {
-        // compare the recorded decimal price with the X128 price that was requested, to 1e-9 relative
-        const [ip, fp = ""] = String(recorded).split("."); const rec = BigInt(ip + fp.padEnd(30, "0").slice(0, 30));
-        const req = BigInt(exp.minPriceX128) * 10n ** 30n / (1n << 128n);
-        const diff = rec > req ? rec - req : req - rec;
-        if (req === 0n || diff * 1000000000n > req) errs.push(`channel minimum price ${recorded} differs from the requested floor`);
-      }
-    }
-  }
-}
-
 /* ---------------- REST with failover for reads; broadcast is bound to one endpoint ---------------- */
 const CHAIN = {
   "osmosis-1":   { rests: K.OSMO_REST,  feeDenom: "uosmo", feeDec: 6,  feeSym: "OSMO" },
@@ -600,58 +500,6 @@ async function waitReceipt(chainId, hash, maxMs = 10 * 60 * 1000) {
   const t0 = Date.now();
   while (Date.now() - t0 < maxMs) { const r = await rpc(chainId, "eth_getTransactionReceipt", [hash]); if (r) { if (r.status !== "0x1") throw new Error(`tx ${hash} reverted`); return r; } await sleep(4000); }
   throw new Error(`no receipt for ${hash} after 10 minutes`);
-}
-
-/* ---------------- Nomic relayers, Chainflip, Bitcoin ---------------- */
-async function nomicSigsetConsensus() {
-  const sets = await Promise.all(K.NOMIC_RELAYERS.map(async r => { try { return await jget(r + "/sigset"); } catch (e) { throw new Error(`Nomic relayer ${r}: ${e.message}`); } }));
-  for (const x of sets.slice(1)) if (!sameSigset(sets[0], x)) throw new Error("Nomic relayers disagree on the signatory set; not deriving an address");
-  if (!sets[0].depositsEnabled) throw new Error("Nomic deposits are disabled right now (capacity limit)");
-  return sets[0];
-}
-async function nomicBroadcastAddress(address, sigsetIndex, broadcastBytes) {
-  const results = await Promise.all(K.NOMIC_RELAYERS.map(async r => {
-    const res = await fetch(`${r}/address?deposit_addr=${address}&sigset_index=${sigsetIndex}`, { method: "POST", body: broadcastBytes });
-    if (!res.ok) throw new Error(`Nomic relayer ${r} refused the address: ${(await res.text()).slice(0, 120)}`);
-    return true;
-  }));
-  return results.length;
-}
-async function chainflipQuote(src, dst, amount) {
-  const qs = await jget(`${K.CHAINFLIP}/v2/quote?srcChain=${src.chain}&srcAsset=${src.asset}&destChain=${dst.chain}&destAsset=${dst.asset}&amount=${amount}`);
-  const q = (Array.isArray(qs) ? qs : [qs]).find(x => x.type === "REGULAR"); if (!q) throw new Error("Chainflip returned no regular quote");
-  return q;
-}
-async function chainflipOpenChannel(src, dst, amount, destAddress, refundAddress, q, srcDec, dstDec) {
-  const tol = Number(q.recommendedSlippageTolerancePercent || 2.5), minPriceX128 = chainflipMinPriceX128(q.estimatedPrice, tol, srcDec, dstDec);
-  const body = { srcAsset: src, destAsset: dst, destAddress, amount: String(amount),
-    fillOrKillParams: { retryDurationBlocks: K.CHAINFLIP_RETRY_BLOCKS, refundAddress, minPriceX128 },
-    quote: Object.fromEntries(["intermediateAmount", "egressAmount", "estimatedPrice", "recommendedSlippageTolerancePercent", "recommendedLivePriceSlippageTolerancePercent"].filter(k => q[k] !== undefined).map(k => [k, q[k]])),
-    takeCommission: true };
-  const ch = await jget(`${K.CHAINFLIP}/api/openSwapDepositChannel`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  const status = await jget(`${K.CHAINFLIP}/v2/swaps/${ch.id}`);
-  const errs = []; checkChainflipChannel(errs, status, { srcChain: src.chain, srcAsset: src.asset, destChain: dst.chain, destAsset: dst.asset, destAddress, amount: String(amount), depositAddress: ch.depositAddress, id: ch.id, refundAddress, retryDurationBlocks: K.CHAINFLIP_RETRY_BLOCKS, minPriceX128 });
-  if (errs.length) throw new Error("Chainflip channel refused:\n• " + errs.join("\n• "));
-  return { ...ch, status };
-}
-async function chainflipWait(id, onState, maxMs = 3 * 60 * 60 * 1000) {
-  const t0 = Date.now(); let last = "";
-  while (Date.now() - t0 < maxMs) {
-    let s; try { s = await jget(`${K.CHAINFLIP}/v2/swaps/${id}`); } catch (e) { onState("Chainflip status unavailable: " + e.message); await sleep(15000); continue; }
-    if (s.state !== last) { onState("Chainflip: " + s.state); last = s.state; }
-    if (s.state === "COMPLETED") return s;
-    if (s.state === "FAILED") throw new Error("Chainflip swap failed: " + JSON.stringify(s.swapEgress?.failure || s.refundEgress || s.state));
-    await sleep(15000);
-  }
-  throw new Error("Chainflip swap did not complete in time");
-}
-/* confirmed BTC balance of an address, in sats, via mempool.space */
-async function btcBalance(addr) { const j = await jget(`${K.MEMPOOL}/address/${addr}`); return BigInt(j.chain_stats.funded_txo_sum) - BigInt(j.chain_stats.spent_txo_sum); }
-const btcKeplr = () => { if (!window.bitcoin_keplr) throw new Error("Keplr's Bitcoin provider (window.bitcoin_keplr) is missing; update Keplr and enable Bitcoin"); return window.bitcoin_keplr; };
-async function connectBitcoin() {
-  const accs = await btcKeplr().connectWallet(); W.btc = accs[0];
-  const net = await btcKeplr().getNetwork(); if (net !== "livenet") throw new Error(`Keplr Bitcoin is on ${net}, not livenet`);
-  return W.btc;
 }
 
 /* ---------------- Skip ---------------- */
@@ -1176,14 +1024,13 @@ function validateGas(res, ctx) {   // ctx: {osmo, target, recipient, recipientHe
 }
 
 /* ---------------- wallets: Keplr for the Cosmos chains and, via its EIP-1193 provider, the EVM chains ---------------- */
-const W = { osmo: null, inj: null, injHex: null, noble: null, nobleHex: null, hub: null, evm: null, btc: null, bal: {} };
-const cycleAddrs = () => ({ osmo: W.osmo, inj: W.inj, noble: W.noble, hub: W.hub, evm: W.evm ? W.evm.toLowerCase() : null, btc: W.btc || null });
+const W = { osmo: null, inj: null, injHex: null, noble: null, nobleHex: null, hub: null, evm: null, bal: {} };
+const cycleAddrs = () => ({ osmo: W.osmo, inj: W.inj, noble: W.noble, hub: W.hub, evm: W.evm ? W.evm.toLowerCase() : null });
 /* every address a cycle was started with must still be the connected one; a different account would strand the
    earlier transfer and spend the new account's own balance */
-function addrsMismatch(recorded, current, needsBtc) {
+function addrsMismatch(recorded, current) {
   if (!recorded) return "this cycle predates address binding; abandon it and use the stranded-funds offer instead";
   for (const k of ["osmo", "inj", "noble", "hub", "evm"]) if (recorded[k] && recorded[k] !== current[k]) return `${k} address changed since this cycle started (${recorded[k]} → ${current[k]})`;
-  if (needsBtc && recorded.btc && recorded.btc !== current.btc) return `Bitcoin address changed since this cycle started (${recorded.btc} → ${current.btc})`;
   return null;
 }
 async function connectKeplr() {
@@ -1207,7 +1054,6 @@ async function connectKeplr() {
   if (!window.keplr.ethereum) throw new Error("this Keplr has no EVM provider (window.keplr.ethereum); update the extension");
   const accs = await window.keplr.ethereum.request({ method: "eth_requestAccounts" });
   W.evm = accs[0];
-  try { await connectBitcoin(); } catch (e) { W.btc = null; log("Bitcoin (Keplr):", e.message, "· BTC plans stay disabled"); }
   log("Keplr:", W.osmo, W.inj || "(no Injective)", W.noble, W.evm, W.ledger ? "· Ledger key: amino signing" : "");
 }
 const eth = (method, params = []) => { if (!window.keplr?.ethereum) throw new Error("Keplr EVM provider missing"); return window.keplr.ethereum.request({ method, params }); };
@@ -1264,14 +1110,13 @@ async function refreshBalances() {
   const jobs = [
     (async () => { const [a, g] = await Promise.all([bankBalance("osmosis-1", W.osmo, ALLOY), bankBalance("osmosis-1", W.osmo, "uosmo")]); W.bal.osmo = a; $("bal_osmo").textContent = fmt2(a, decOf(ALLOY)); $("gas_osmo").innerHTML = gasCell(g, 6, "OSMO", LOW.osmo); })(),
     (async () => { const injDenom = ALLOY === pgAlloy().alloy ? PG.injDenom : K.INJ_ERC20; $("injSym").textContent = ALLOY === pgAlloy().alloy ? "USDT (Peggy)" : "USDC.inj"; if (!W.inj) { W.bal.inj = 0n; $("bal_inj").textContent = "\u2013"; $("gas_inj").textContent = "\u2013"; return; } const [a, g] = await Promise.all([bankBalance("injective-1", W.inj, injDenom), bankBalance("injective-1", W.inj, "inj")]); W.bal.inj = a; $("bal_inj").textContent = fmt2(a); $("gas_inj").innerHTML = gasCell(g, 18, "INJ", LOW.inj); })(),
-    (async () => { W.bal.osmoVariant = ALLOY === pgAlloy().alloy ? await bankBalance("osmosis-1", W.osmo, PG.inj) : ALLOY === btcAlloy().alloy ? await bankBalance("osmosis-1", W.osmo, K.NBTC) : 0n; })(),
-    (async () => { const show = ALLOY === btcAlloy().alloy && W.btc; $("row_btc").style.display = show ? "" : "none"; if (show) { const b = await btcBalance(W.btc); W.bal.btc = b; $("bal_btc").textContent = fmt2(b, 8) + " BTC"; } else W.bal.btc = 0n; })(),
+    (async () => { W.bal.osmoVariant = ALLOY === pgAlloy().alloy ? await bankBalance("osmosis-1", W.osmo, PG.inj) : 0n; })(),
     (async () => { try { const a = await bankBalance("noble-1", W.noble, "uusdc"); W.bal.noble = a; $("bal_noble").textContent = fmt2(a); $("gas_noble").innerHTML = gasCell(a, 6, "USDC", LOW.noble); } catch (e) { W.bal.noble = null; $("bal_noble").textContent = "?"; $("gas_noble").innerHTML = `<span class="warn">unreadable</span>`; throw e; } })(),
     (async () => { const [a, g] = await Promise.all([erc20BalanceOf("43114", K.HUB["43114"].usdc, W.evm), evmNative("43114", W.evm)]); W.bal.avax = a; $("bal_avax").textContent = fmt2(a); $("gas_avax").innerHTML = gasCell(g, 18, "AVAX", LOW.avax); })(),
     (async () => { const et = ethTokenOf(ALLOY) || { token: K.HUB["1"].usdc, sym: "USDC", dec: 6 }; $("ethSym").textContent = et.sym; const [a, g] = await Promise.all([erc20BalanceOf("1", et.token, W.evm), evmNative("1", W.evm)]); W.bal.eth = a; $("bal_eth").textContent = fmt2(a, et.dec); $("gas_eth").innerHTML = gasCell(g, 18, "ETH", LOW.eth); })(),
   ];
   const rs = await Promise.allSettled(jobs);
-  rs.forEach((r, i) => { if (r.status === "rejected") log(["osmosis", "injective", "noble", "avalanche", "ethereum", "osmosis variant", "bitcoin"][i] + " balance:", r.reason?.message || r.reason); });
+  rs.forEach((r, i) => { if (r.status === "rejected") log(["osmosis", "injective", "noble", "avalanche", "ethereum", "osmosis variant"][i] + " balance:", r.reason?.message || r.reason); });
   document.querySelectorAll("[data-fund]").forEach(b => {
     const noAcct = b.dataset.fund === "inj" && !W.inj;
     b.disabled = BUSY || noAcct;
@@ -1531,8 +1376,7 @@ const refused = v => new Error("route refused:\n• " + v.errs.join("\n• "));
 async function txState(chain, hash) {
   for (let i = 0; i < 6; i++) {
     try {
-      if (chain === "bitcoin") { try { await jget(`${K.MEMPOOL}/tx/${hash}`); return "exists"; } catch {} }
-      else if (K.EVM[chain]) {
+      if (K.EVM[chain]) {
         const r = await rpc(chain, "eth_getTransactionReceipt", [hash]);
         if (r) return r.status === "0x1" ? "exists" : "failed";
         if (await rpc(chain, "eth_getTransactionByHash", [hash])) return "pending";
@@ -1861,97 +1705,6 @@ STAGE.P5 = { title: `Osmosis: USDT.eth.inj → allUSDT (pool ${pgAlloy().pool})`
   note(`tx ${hash}`);
   return waitArrival(() => bankBalance("osmosis-1", W.osmo, alloy), before, amountIn, "allUSDT", 24);
 } };
-/* Alloyed BTC: WBTC.eth.axl (or WBTC.eth.atom) <-> nBTC through Ethereum WBTC, Chainflip and Nomic */
-const btcAlloy = () => { const a = K.ALLOYS.find(x => x.sym === "allBTC"); return { alloy: `factory/${a.contract}/alloyed/allBTC`, pool: a.pool }; };
-const WBTC = () => K.ETH_PAIRS.allBTC;
-const nbtcBal = () => bankBalance("osmosis-1", W.osmo, K.NBTC);
-const SATS_TO_NBTC = 1000000n;   // nBTC has 14 decimals, BTC 8
-/* Ethereum WBTC -> Chainflip -> BTC paid straight into a fresh Nomic deposit address -> nBTC on Osmosis (Nomic IBC-delivers it) */
-STAGE.N2 = { title: "Ethereum: WBTC → Chainflip → BTC → Nomic deposit → nBTC on Osmosis", who: "Keplr EVM, Ethereum (one ERC20 transfer to the Chainflip channel)", chain: null, txChain: "1", inDec: 8, outDec: 14, read: nbtcBal, what: "nBTC on Osmosis", async run(amountIn, note, mark) {
-  const bal = await erc20BalanceOf("1", WBTC().token, W.evm);
-  if (bal < BigInt(amountIn)) throw new Error(`Ethereum WBTC balance ${fmtUnits(bal, 8)} is below the ${fmtUnits(amountIn, 8)} this stage expects`);
-  const before = await nbtcBal();
-  // 1. a Nomic deposit address committing to "mint nBTC and IBC it to my Osmosis address", acknowledged by every relayer
-  await assertChannel("osmosis-1", K.OSMO_TO_NOMIC, "nomic-stakenet-3");
-  const sigset = await nomicSigsetConsensus();
-  const now = Date.now();
-  const dest = { sourcePort: "transfer", sourceChannel: K.NOMIC_TO_OSMO, receiver: W.osmo, sender: bech32Rehrp(W.osmo, "nomic"), memo: "", timeoutTimestamp: (BigInt(now + 5 * 86400 * 1000 - (now % 3600000)) * 1000000n).toString() };
-  const { address: nomicAddr, broadcastBytes } = await nomicDepositAddress(sigset, dest);
-  const acks = await nomicBroadcastAddress(nomicAddr, sigset.index, broadcastBytes);
-  note(`Nomic deposit address ${nomicAddr} (signatory set ${sigset.index}, ${acks}/${K.NOMIC_RELAYERS.length} relayers acknowledged, expires in 5 days)`);
-  const feeRate = sigset.bridgeFeeOverrides?.ibc?.[K.NOMIC_TO_OSMO] ?? sigset.bridgeFeeRate;
-  // 2. a Chainflip channel WBTC -> BTC that pays that address; refunds come back to you on Ethereum
-  const src = { chain: "Ethereum", asset: "WBTC" }, dst = { chain: "Bitcoin", asset: "BTC" };
-  const q = await chainflipQuote(src, dst, amountIn);
-  const ch = await chainflipOpenChannel(src, dst, amountIn, nomicAddr, W.evm, q, 8, 8);
-  const egress = BigInt(q.egressAmount), expectedNbtc = (egress * BigInt(Math.round((1 - Number(feeRate)) * 1000000)) / 1000000n - 2000n) * SATS_TO_NBTC;   // Nomic fee rate, minus a miner-fee allowance
-  mark({ before: before.toString(), expected: expectedNbtc.toString(), nomicAddr, chainflipId: ch.id });
-  if (!await confirmSheet({ title: "Sign on Ethereum", rows: [["You send", `${fmtUnits(amountIn, 8)} WBTC to the Chainflip channel`], ["Channel deposit address", ch.depositAddress], ["Chainflip pays", `≈ ${fmtUnits(q.egressAmount, 8)} BTC to the Nomic deposit address`], ["Nomic deposit address", nomicAddr],
-    ["Then", `Nomic mints nBTC (bridge fee ${(Number(feeRate) * 100).toFixed(2)}% plus miner fee) and IBC-delivers it to ${W.osmo}`], ["Arrives as", `≈ ${fmtUnits(expectedNbtc.toString(), 14)} nBTC`], ["Chainflip fees", q.includedFees.map(f => `${f.type} ${f.amount} ${f.asset}`).join(", ")], ["Refund address", `${W.evm} (Ethereum) if the swap cannot fill within ${K.CHAINFLIP_RETRY_BLOCKS} blocks`],
-    ["Channel expires", new Date(ch.estimatedExpiryTime).toLocaleString()], ["Estimated", `Chainflip ${q.estimatedDurationSeconds}s, then Bitcoin confirmations for Nomic (about an hour)`]],
-    warn: "Chainflip's price is a market swap with slippage, not 1:1. Do not send anything else to either address." })) throw new Error("cancelled");
-  // 3. plain ERC20 transfer of WBTC to the channel
-  const data = "0x" + K.ERC20_TRANSFER_SELECTOR + pad32(ch.depositAddress) + BigInt(amountIn).toString(16).padStart(64, "0");
-  const hash = await evmSend("1", { to: WBTC().token, data, value: "0x0" });
-  mark({ hash }); note(`sent ${hash}, waiting for receipt`); await waitReceipt("1", hash);
-  await chainflipWait(ch.id, m => note(m));
-  note("BTC sent to the Nomic deposit address; waiting for Nomic to mint and deliver nBTC (Bitcoin confirmations)");
-  return waitArrival(nbtcBal, before, expectedNbtc.toString(), "nBTC on Osmosis", 2160, 14);
-} };
-/* nBTC -> allBTC on the pool, 1:1 or nothing */
-STAGE.N3 = { title: `Osmosis: nBTC → allBTC (pool ${btcAlloy().pool})`, who: "Keplr, Osmosis", chain: null, txChain: "osmosis-1", inDec: 14, outDec: 8, read: () => bankBalance("osmosis-1", W.osmo, btcAlloy().alloy), what: "allBTC", async run(amountIn, note, mark) {
-  const { alloy, pool } = btcAlloy();
-  const bal = await nbtcBal(); if (bal < BigInt(amountIn)) amountIn = bal.toString();   // deposit whatever actually arrived
-  if (BigInt(amountIn) <= 0n) throw new Error("no nBTC to deposit");
-  const before = await bankBalance("osmosis-1", W.osmo, alloy);
-  // allBTC has 8 decimals and nBTC 14: the transmuter normalises by 1e6, so 1:1 in BTC terms
-  const minOut = (BigInt(amountIn) / SATS_TO_NBTC).toString();
-  mark({ before: before.toString(), expected: minOut, amountIn });
-  const anys = [Any("/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn", MsgSwapExactAmountIn({ sender: W.osmo, routes: [{ poolId: pool, tokenOutDenom: alloy }], tokenIn: { denom: K.NBTC, amount: amountIn }, tokenOutMinAmount: minOut }))];
-  if (!await confirmSheet({ title: "Sign on Osmosis", rows: [["Swap", `${fmtUnits(amountIn, 14)} nBTC → allBTC on pool ${pool}`], ["Minimum out", `${fmtUnits(minOut, 8)} allBTC (1:1 in BTC terms or the tx fails)`]] })) throw new Error("cancelled");
-  const hash = await signAndBroadcast("osmosis-1", W.osmo, anys, note, h => mark({ hash: h }));
-  note(`tx ${hash}`);
-  return waitArrival(() => bankBalance("osmosis-1", W.osmo, alloy), before, minOut, "allBTC", 24, 8);
-} };
-/* allBTC -> nBTC (own swap) -> IBC to Nomic with a withdrawal memo -> BTC at your Keplr Bitcoin address */
-STAGE.M1 = { title: `Osmosis: allBTC → nBTC (pool ${btcAlloy().pool}) → Nomic → withdraw to your Bitcoin address`, who: "Keplr, Osmosis (one tx, two messages, built here)", chain: null, txChain: "osmosis-1", read: () => btcBalance(W.btc), what: "BTC at your Keplr address", async run(amountIn, note, mark) {
-  if (!W.btc) throw new Error("Keplr Bitcoin is not connected");
-  const { alloy, pool } = btcAlloy();
-  await assertChannel("osmosis-1", K.OSMO_TO_NOMIC, "nomic-stakenet-3");
-  const before = await btcBalance(W.btc);
-  const nbtcOut = (BigInt(amountIn) * SATS_TO_NBTC).toString();          // allBTC (8) -> nBTC (14), 1:1 in BTC terms
-  mark({ before: before.toString(), expected: (BigInt(amountIn) * 97n / 100n).toString() });   // Nomic's withdrawal takes miner fees; 3% allowance
-  const timeout = ((BigInt(Date.now()) + 60n * 60n * 1000n) * 1000000n).toString();
-  const anys = [
-    Any("/osmosis.poolmanager.v1beta1.MsgSwapExactAmountIn", MsgSwapExactAmountIn({ sender: W.osmo, routes: [{ poolId: pool, tokenOutDenom: K.NBTC }], tokenIn: { denom: alloy, amount: amountIn }, tokenOutMinAmount: nbtcOut })),
-    Any("/ibc.applications.transfer.v1.MsgTransfer", MsgTransfer({ sourcePort: "transfer", sourceChannel: K.OSMO_TO_NOMIC, token: { denom: K.NBTC, amount: nbtcOut }, sender: W.osmo, receiver: bech32Rehrp(W.osmo, "nomic"), timeoutHeight: {}, timeoutTimestamp: timeout, memo: nomicWithdrawMemo(W.btc) })),
-  ];
-  if (!await confirmSheet({ title: "Sign on Osmosis", rows: [["Message 1", `swap ${fmtUnits(amountIn, 8)} allBTC → nBTC on pool ${pool}, minimum out ${fmtUnits(nbtcOut, 14)}`], ["Message 2", `IBC ${fmtUnits(nbtcOut, 14)} nBTC over ${K.OSMO_TO_NOMIC} to Nomic with a withdrawal memo`],
-    ["Withdraw to", `${W.btc} (your Keplr Bitcoin address)`], ["Atomic", "if either message fails nothing moves"], ["Estimated", "next Nomic checkpoint plus Bitcoin confirmations; can be hours"]],
-    warn: "Nomic pays out in its periodic checkpoint transaction, minus Bitcoin miner fees. The page waits up to 4 hours; if it takes longer, reload later and Continue." })) throw new Error("cancelled");
-  const hash = await signAndBroadcast("osmosis-1", W.osmo, anys, note, h => mark({ hash: h }));
-  note(`tx ${hash}; waiting for Nomic's checkpoint and Bitcoin confirmations`);
-  return waitArrival(() => btcBalance(W.btc), before, (BigInt(amountIn) * 97n / 100n).toString(), "BTC at your Keplr address", 2880, 8);
-} };
-/* BTC -> Chainflip -> WBTC to your Ethereum address, sent from Keplr Bitcoin */
-STAGE.M2 = { title: "Bitcoin: BTC → Chainflip → Ethereum WBTC", who: "Keplr Bitcoin", chain: null, txChain: "bitcoin", read: () => erc20BalanceOf("1", WBTC().token, W.evm), what: "Ethereum WBTC", async run(amountIn, note, mark) {
-  if (!W.btc) throw new Error("Keplr Bitcoin is not connected");
-  const bal = await btcBalance(W.btc);
-  const sats = BigInt(amountIn) - 5000n;   // leave room for the Bitcoin miner fee Keplr adds on top
-  if (bal < sats + 5000n || sats <= 0n) throw new Error(`Keplr Bitcoin balance ${fmtUnits(bal, 8)} BTC cannot send ${fmtUnits(amountIn, 8)} plus miner fee`);
-  const before = await erc20BalanceOf("1", WBTC().token, W.evm);
-  const src = { chain: "Bitcoin", asset: "BTC" }, dst = { chain: "Ethereum", asset: "WBTC" };
-  const q = await chainflipQuote(src, dst, sats.toString());
-  const ch = await chainflipOpenChannel(src, dst, sats.toString(), W.evm, W.btc, q, 8, 8);
-  mark({ before: before.toString(), expected: q.egressAmount, chainflipId: ch.id });
-  if (!await confirmSheet({ title: "Send from Keplr Bitcoin", rows: [["You send", `${fmtUnits(sats.toString(), 8)} BTC to the Chainflip channel`], ["Channel deposit address", ch.depositAddress], ["Chainflip pays", `≈ ${fmtUnits(q.egressAmount, 8)} WBTC`], ["To", `${W.evm} (Ethereum)`],
-    ["Chainflip fees", q.includedFees.map(f => `${f.type} ${f.amount} ${f.asset}`).join(", ")], ["Refund address", `${W.btc} if the swap cannot fill within ${K.CHAINFLIP_RETRY_BLOCKS} blocks`], ["Channel expires", new Date(ch.estimatedExpiryTime).toLocaleString()], ["Estimated", `${q.estimatedDurationSeconds}s after Bitcoin confirmations`]],
-    warn: "Chainflip's price is a market swap with slippage, not 1:1. Keplr will ask you to confirm the Bitcoin transaction." })) throw new Error("cancelled");
-  const txid = await btcKeplr().sendBitcoin(ch.depositAddress, Number(sats));
-  mark({ hash: txid }); note(`bitcoin tx ${txid}`);
-  await chainflipWait(ch.id, m => note(m));
-  return waitArrival(() => erc20BalanceOf("1", WBTC().token, W.evm), before, q.egressAmount, "Ethereum WBTC", 360, 8);
-} };
 STAGE.D1 = axlUnwrapStage(SPEC_USDC);
 STAGE.E2 = ethToAlloyAxelarStage(SPEC_USDC);
 /* the three Axelar <-> Eureka alloys get four stages each */
@@ -1986,18 +1739,6 @@ for (const [alloy, spec] of Object.entries(PAIR_SPECS)) {
     PLANS["allUSDT:inj>atom"] = { alloy: usdt.alloy, reduce: PG.inj, increase: usdt.atom, stages: ["P1", "P2", "X2_allUSDT"], sigs: 3, mins: 50, parked: { inj: "P2", eth: "X2_allUSDT" }, ...px };
     PLANS["allUSDT:axl>inj"]  = { alloy: usdt.alloy, reduce: usdt.axl,  increase: PG.inj, stages: ["X1_allUSDT", "P3", "P4", "P5"], sigs: 4, mins: 35, parked: { eth: "P3", inj: "P4", osmoVariant: "P5" }, ...px };
     PLANS["allUSDT:atom>inj"] = { alloy: usdt.alloy, reduce: usdt.atom, increase: PG.inj, stages: ["Y1_allUSDT", "P3", "P4", "P5"], sigs: 4, mins: 35, parked: { eth: "P3", inj: "P4", osmoVariant: "P5" }, ...px };
-  }
-}
-{
-  const b = PAIR_SPECS[btcAlloy().alloy];
-  if (b) {
-    /* experimental: Nomic deposits/withdrawals and Chainflip channels have not been exercised from this page; the open
-       assumptions (taproot payouts, Nomic minimums, timings) are in the README. Capped at 0.005 BTC until confirmed. */
-    const nx = { experimental: "Nomic deposit addresses, Nomic withdrawals to a taproot address and Chainflip channels have not been exercised from this page", maxAmount: "500000" };
-    PLANS["allBTC:axl>nbtc"]  = { alloy: b.alloy, reduce: b.axl,  increase: K.NBTC, stages: ["X1_allBTC", "N2", "N3"], sigs: 3, mins: 90,  parked: { eth: "N2", osmoVariant: "N3" }, needsBtc: false, ...nx };
-    PLANS["allBTC:atom>nbtc"] = { alloy: b.alloy, reduce: b.atom, increase: K.NBTC, stages: ["Y1_allBTC", "N2", "N3"], sigs: 3, mins: 90,  parked: { eth: "N2", osmoVariant: "N3" }, needsBtc: false, ...nx };
-    PLANS["allBTC:nbtc>axl"]  = { alloy: b.alloy, reduce: K.NBTC, increase: b.axl,  stages: ["M1", "M2", "Y2_allBTC"], sigs: 3, mins: 240, parked: { btc: "M2", eth: "Y2_allBTC" }, needsBtc: true, ...nx };
-    PLANS["allBTC:nbtc>atom"] = { alloy: b.alloy, reduce: K.NBTC, increase: b.atom, stages: ["M1", "M2", "X2_allBTC"], sigs: 3, mins: 240, parked: { btc: "M2", eth: "X2_allBTC" }, needsBtc: true, ...nx };
   }
 }
 /* the Ethereum token the selected alloy's plans move through, for the Status table and stranded-funds detection */
@@ -2040,7 +1781,7 @@ function syncStart() {
   $("ackRow").style.display = ackNeeded ? "flex" : "none";
   if (ackNeeded) $("ackText").textContent = `Experimental route: ${pk.experimental}. Capped at ${fmt2(pk.maxAmount, decOf(pk.alloy))} ${ALLOYS[pk.alloy]?.sym || ""} per cycle. I understand this route is unverified and I am using an amount I can afford to lose.`;
   let overCap = false; if (ackNeeded) { try { overCap = BigInt(parseAmount($("amount").value, decOf(ALLOY))) > BigInt(pk.maxAmount); } catch {} }
-  b.disabled = !(W.osmo && W.evm) || BUSY || (!live && (!pk || !!FROZEN[ALLOY] || (planNeedsInj(pk) && !W.inj) || (pk.needsBtc && !W.btc) || (ackNeeded && (!$("ackExperimental").checked || overCap))));
+  b.disabled = !(W.osmo && W.evm) || BUSY || (!live && (!pk || !!FROZEN[ALLOY] || (planNeedsInj(pk) && !W.inj) || (ackNeeded && (!$("ackExperimental").checked || overCap))));
   b.textContent = live ? `Continue at stage ${CYCLE.idx + 1}` : "Start cycle";
   b.title = !live && pk && planNeedsInj(pk) && !W.inj ? "This route signs on Injective; connect a mnemonic-backed Keplr account (a Ledger cannot sign on Injective from this page)." : "";
 }
@@ -2049,14 +1790,13 @@ function renderStranded() {
   const box = $("strandedBox"); box.innerHTML = "";
   const plan = planOf(CYCLE); if (CYCLE && plan && CYCLE.idx < plan.stages.length) return;
   const et = ethTokenOf(ALLOY);
-  const isBtc = ALLOY === btcAlloy().alloy;
-  const parked = { avax: W.bal.avax || 0n, eth: W.bal.eth || 0n, inj: W.bal.inj || 0n, noble: W.bal.noble || 0n, osmoVariant: W.bal.osmoVariant || 0n, btc: W.bal.btc || 0n };   // null (unreadable) reads as 0 here, which only suppresses an offer
-  const sym = { avax: "USDC on Avalanche", eth: `${et?.sym || "USDC"} on Ethereum`, inj: ALLOY === pgAlloy().alloy ? "USDT on Injective" : "USDC.inj on Injective", noble: "USDC on Noble", osmoVariant: isBtc ? "nBTC on Osmosis (not yet deposited)" : "USDT.eth.inj on Osmosis (not yet deposited)", btc: "BTC at your Keplr address" };
-  const dec = { avax: 6, eth: et?.dec ?? 6, inj: 6, noble: 6, osmoVariant: isBtc ? 14 : 6, btc: 8 };
+  const parked = { avax: W.bal.avax || 0n, eth: W.bal.eth || 0n, inj: W.bal.inj || 0n, noble: W.bal.noble || 0n, osmoVariant: W.bal.osmoVariant || 0n };   // null (unreadable) reads as 0 here, which only suppresses an offer
+  const sym = { avax: "USDC on Avalanche", eth: `${et?.sym || "USDC"} on Ethereum`, inj: ALLOY === pgAlloy().alloy ? "USDT on Injective" : "USDC.inj on Injective", noble: "USDC on Noble", osmoVariant: "USDT.eth.inj on Osmosis (not yet deposited)" };
+  const dec = { avax: 6, eth: et?.dec ?? 6, inj: 6, noble: 6, osmoVariant: 6 };
   const opts = [];
   for (const [where, amt] of Object.entries(parked)) {
     // dust (a thousandth of a unit) is rounding, not a stranded leg; on Noble the fee float is USDC too, so only 5 USDC and up counts
-    if (amt < (where === "noble" ? 5000000n : where === "btc" ? 20000n : 10n ** BigInt(Math.max(0, dec[where] - 3)))) continue;   // BTC under 0.0002 is not worth a Chainflip channel
+    if (amt < (where === "noble" ? 5000000n : 10n ** BigInt(Math.max(0, dec[where] - 3)))) continue;
     for (const [pk, p] of Object.entries(PLANS)) if (p.alloy === ALLOY && p.parked[where]) opts.push(`<button class="small" data-plan="${pk}" data-stage="${p.parked[where]}" data-amt="${amt}">${esc(symOf(p.reduce))} → ${esc(symOf(p.increase))}: continue from ${fmt2(amt, dec[where])} ${sym[where]}</button>`);
   }
   if (!opts.length) return;
@@ -2076,7 +1816,7 @@ async function runCycle() {
   const plan = planOf(CYCLE); if (!plan) return;
   BUSY = true; renderSteps(); document.querySelectorAll("[data-fund]").forEach(b => b.disabled = true);
   try {
-    const mm = addrsMismatch(CYCLE.addrs, cycleAddrs(), plan.needsBtc);
+    const mm = addrsMismatch(CYCLE.addrs, cycleAddrs());
     if (mm) throw new Error("refusing to continue: " + mm);
     while (CYCLE.idx < plan.stages.length) {
       const key = plan.stages[CYCLE.idx], prevKey = plan.stages[CYCLE.idx - 1];
@@ -2152,9 +1892,8 @@ function updateEstimate() {
     const avail = W.pool?.denoms?.[rd];
     const cap = (avail !== undefined && BigInt(amt) > avail ? ` <span class="err">The pool only holds ${fmt2(avail, decOf(rd))} ${esc(symOf(rd))}; a larger exit cannot be filled.</span>` : "") + (FROZEN[ALLOY] ? ` <span class="err">Cycling disabled: ${esc(FROZEN[ALLOY])}.</span>` : "")
       + (plan.experimental ? ` <span class="warn">Experimental route${BigInt(amt) > BigInt(plan.maxAmount) ? `: above the ${fmt2(plan.maxAmount, decOf(ALLOY))} ${esc(a.sym)} cap` : ""}.</span>` : "");
-    const viaEth = plan.stages.some(k => /^(E|D|X|Y|C)/.test(k)), viaCf = plan.stages.some(k => /^(N2|M2)$/.test(k));
-    const fees = viaCf ? " Goes via Ethereum, Chainflip and Nomic: Chainflip is a market swap (about $8 network fee plus slippage), Nomic takes miner fees, plus Axelar/Eureka and Ethereum gas. Expect hours, not minutes." + (plan.needsBtc && !W.btc ? " <span class=\"err\">Needs Keplr Bitcoin connected.</span>" : "")
-               : viaEth ? " Goes via Ethereum: flat Axelar (about $1 to $1.60 out of the amount when unwrapping, about $0.11 of ETH when wrapping) or Eureka (about $0.20) fees plus Ethereum gas, so small cycles are proportionally dearer." : " Bridge fees under $0.05 plus gas.";
+    const viaEth = plan.stages.some(k => /^(E|D|X|Y|C)/.test(k));
+    const fees = viaEth ? " Goes via Ethereum: flat Axelar (about $1 to $1.60 out of the amount when unwrapping, about $0.11 of ETH when wrapping) or Eureka (about $0.20) fees plus Ethereum gas, so small cycles are proportionally dearer." : " Bridge fees under $0.05 plus gas.";
     $("estimate").innerHTML = `${fmt2(amt, decOf(ALLOY))} ${esc(a.sym)} out as ${esc(symOf(rd))}, back as ${esc(symOf(inc))}. ${plan.sigs} signatures, about ${plan.mins} minutes.${fees}${cap}`;
   } catch (e) { $("estimate").textContent = e.message; }
   syncStart();
