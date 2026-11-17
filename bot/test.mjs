@@ -119,6 +119,12 @@ ok(bad, "invalid mnemonic refused");
   ok(quotaRoom(reset, "in", now, 600000n, 5).room === 570000n && quotaRoom(reset, "in", now, 600000n).resetsAt === Number(BigInt(later) / 1000000n), "a reset quota keeps its reserve and its live window end");
   let threwNull = false; try { quotaRoom(reset, "in", now); } catch { threwNull = true; }
   ok(threwNull, "a null channel_value without a current supply is refused, never read as zero room");
+  // contract 0.2.0 (live USDC.inj shape): null percentages, absolute caps on GROSS flow, room is the tighter bound
+  const abs = (inflow, outflow, end, pr, ar) => ({ quota: { name: "a", max_percentage_recv: pr, max_percentage_send: null, channel_value: "1000000", max_absolute_recv: ar, max_absolute_send: null }, flow: { inflow, outflow, period_end: end } });
+  ok(quotaRoom(abs("300000", "250000", later, null, "500000"), "in", now).room === 200000n, "absolute-only cap counts gross inflow, not net");
+  ok(quotaRoom(abs("300000", "250000", later, null, "500000"), "in", now, undefined, 10).room === 150000n && quotaRoom(abs("900000", "0", past, null, "500000"), "in", now).room === 500000n, "absolute cap keeps the reserve and resets with the window, without needing a supply");
+  ok(quotaRoom(abs("300000", "0", later, 100, "500000"), "in", now).room === 200000n && quotaRoom(abs("0", "0", later, 30, "500000"), "in", now).room === 300000n, "with both bounds the tighter one wins");
+  ok(quotaRoom(abs("0", "0", later, null, "500000"), "out", now).room === null, "a direction with neither bound reports no room limit, not zero");
 }
 
 /* ---------- gas refill sizing ---------- */

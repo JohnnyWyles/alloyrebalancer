@@ -30,7 +30,7 @@ export function deficit(pool, targetPct) {
 }
 export const sharePct = pool => pool.total ? Number(pool.inj * 1000000n / pool.total) / 10000 : 0;
 
-/* ---------------- IBC rate limits (x/ibc-rate-limit contract v0.1.1) ----------------
+/* ---------------- IBC rate limits (x/ibc-rate-limit contract v0.2.0) ----------------
    Each quota caps the NET flow in its window: inflow - outflow must stay <= channel_value * max_percentage_recv / 100
    (outflow - inflow for sends). A window whose period_end has passed restarts from zero on the next transfer. */
 let RL = null;
@@ -49,23 +49,39 @@ async function quotasFor(channel, denom) {
    and can be far above the value it will reset to, so expired windows are sized from resetValue (the current supply).
    A quota reset by its admin keeps its live window but clears channel_value to null; the contract fills it from the
    supply on the next transfer (allow_transfer caches it when is_none()), so a null snapshot is sized from resetValue too.
-   reservePct of each cap is left for other users: the bot's room is what remains below cap * (1 - reservePct/100). */
+   reservePct of each cap is left for other users: the bot's room is what remains below cap * (1 - reservePct/100).
+   Since contract 0.2.0 a direction can have a percentage bound, an absolute bound (max_absolute_*, base units), both or
+   neither; a null percentage means no percentage bound, never 0%. The absolute bound is compared against the GROSS flow
+   in the direction (rate_limit.rs allow_transfer: gross_on), the percentage bound against the NET flow. Room is the
+   smaller of the two; null when the quota bounds neither. */
 export function quotaRoom(q, direction, nowNs, resetValue, reservePct = 0) {
-  const pct = BigInt(direction === "in" ? q.quota.max_percentage_recv : q.quota.max_percentage_send);
+  const isIn = direction === "in";
+  const pctRaw = isIn ? q.quota.max_percentage_recv : q.quota.max_percentage_send;
+  const absRaw = isIn ? q.quota.max_absolute_recv : q.quota.max_absolute_send;
+  const hasPct = pctRaw !== null && pctRaw !== undefined, hasAbs = absRaw !== null && absRaw !== undefined;
   const keepBps = BigInt(10000 - Math.round(reservePct * 100));
-  if (BigInt(q.flow.period_end) < nowNs) {
-    if (resetValue === undefined) throw new Error(`quota ${q.quota.name} has expired and no current supply was given to size its reset`);
-    return { room: BigInt(resetValue) * pct / 100n * keepBps / 10000n, resetsAt: null };
+  const reserved = cap => cap * keepBps / 10000n;
+  const expired = BigInt(q.flow.period_end) < nowNs;
+  const inflow = expired ? 0n : BigInt(q.flow.inflow), outflow = expired ? 0n : BigInt(q.flow.outflow);
+  const rooms = [];
+  if (hasPct) {
+    let value = expired ? undefined : q.quota.channel_value;
+    if (value === null || value === undefined) {
+      if (resetValue === undefined) throw new Error(expired
+        ? `quota ${q.quota.name} has expired and no current supply was given to size its reset`
+        : `quota ${q.quota.name} has no channel_value snapshot and no current supply was given to size it`);
+      value = resetValue;
+    }
+    const cap = reserved(BigInt(value) * BigInt(pctRaw) / 100n);
+    const used = isIn ? (inflow > outflow ? inflow - outflow : 0n) : (outflow > inflow ? outflow - inflow : 0n);
+    rooms.push(cap > used ? cap - used : 0n);
   }
-  let value = q.quota.channel_value;
-  if (value === null || value === undefined) {
-    if (resetValue === undefined) throw new Error(`quota ${q.quota.name} has no channel_value snapshot and no current supply was given to size it`);
-    value = resetValue;
+  if (hasAbs) {
+    const cap = reserved(BigInt(absRaw)), used = isIn ? inflow : outflow;
+    rooms.push(cap > used ? cap - used : 0n);
   }
-  const cap = BigInt(value) * pct / 100n * keepBps / 10000n;
-  const inflow = BigInt(q.flow.inflow), outflow = BigInt(q.flow.outflow);
-  const used = direction === "in" ? (inflow > outflow ? inflow - outflow : 0n) : (outflow > inflow ? outflow - inflow : 0n);
-  return { room: cap > used ? cap - used : 0n, resetsAt: Number(BigInt(q.flow.period_end) / 1000000n) };
+  const room = rooms.length ? rooms.reduce((a, b) => (b < a ? b : a)) : null;
+  return { room, resetsAt: expired ? null : Number(BigInt(q.flow.period_end) / 1000000n) };
 }
 /* smallest headroom over every quota on (any, denom) and (channel, denom); room null when the denom has no quota */
 export async function headroom(denom, direction, channel, reservePct = 0) {
@@ -80,6 +96,7 @@ export async function headroom(denom, direction, channel, reservePct = 0) {
   let best = { room: null, resetsAt: null, quota: null };
   for (const q of qs) {
     const r = quotaRoom(q, direction, nowNs, supply, reservePct);
+    if (r.room === null) continue;   // this quota does not bound this direction
     if (best.room === null || r.room < best.room) best = { ...r, quota: q.quota.name };
   }
   return best;
