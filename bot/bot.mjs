@@ -22,7 +22,7 @@ import { P } from "./page.mjs";
 import { deriveWallet } from "./sign.mjs";
 import { STAGES, ORDER, SKIP_ORDER, CCTP_ORDER, RECOVERY_STARTS, halt, tightenMinAsset } from "./stages.mjs";
 import { CCTP, cctpSelfCheck, depositForBurnV2Calldata, orbiterMemo } from "./cctp.mjs";
-import { makeRunner, fitsFeeCap, loopLossBound, cycleLossBound, planRecovery, nextUtcMidnight, counterBehind } from "./cycle.mjs";
+import { makeRunner, fitsFeeCap, loopLossBound, cycleLossBound, planRecovery, nextUtcMidnight, counterBehind, stallCheck } from "./cycle.mjs";
 import { readPool, deficit, sharePct, headroom, balances, refillGas, accountView } from "./chain.mjs";
 import { lockText, lockStatus, processFacts } from "./lock.mjs";
 import { mnemonicFileProblem } from "./credential.mjs";
@@ -408,7 +408,8 @@ async function main() {
   loadConfig(true);   // fail at startup, not on the first tick, when config.json is missing or invalid
   lock();
   log(`alloybot ${cmd} (${MODE})${DRY ? " (dry run)" : ""} for ${wallet.W.osmo} / ${wallet.W.inj} / ${wallet.W.evm}, state in ${DIR}`);
-  let lastHaltLog = 0, transient = 0;
+  let lastHaltLog = 0, transient = 0, lastWait = "";
+  const stall = {};
   for (;;) {
     let ctx;
     try {
@@ -422,8 +423,13 @@ async function main() {
     } catch (e) {
       const cfg = ctx?.cfg || DEFAULTS;
       if (e.halt) { writeHalt(e.message); await alert(cfg, "HALTED: " + e.message); }
-      else if (e.wait || e.waitRetry) { log("waiting:", e.message); if (e.until) { const s = loadState(); if (!s.cycle) { s.waitUntil = e.until; saveState(s); } } }
+      else if (e.wait || e.waitRetry) { log("waiting:", e.message); lastWait = e.message; if (e.until) { const s = loadState(); if (!s.cycle) { s.waitUntil = e.until; saveState(s); } } }
       else { transient++; log(`error (${transient} in a row): ${e.message}`); if (transient % 15 === 0) await alert(cfg, `${transient} consecutive errors, latest: ${e.message}`); for (const k of Object.keys(PROVEN)) delete PROVEN[k]; }
+    }
+    if (!fs.existsSync(F.halted)) {   // a halt has already alerted
+      let msg = null;
+      try { msg = stallCheck(stall, loadState().cycle, Date.now()); } catch {}   // an unreadable journal surfaces as a halt on the next tick
+      if (msg) await alert(ctx?.cfg || DEFAULTS, `${msg}. Funds are mid-loop.${lastWait ? ` Last wait: ${lastWait}` : " See the journal for what it is waiting on."}`);
     }
     if (cmd === "once" || DRY) return;
     await sleep(TICK_MS);

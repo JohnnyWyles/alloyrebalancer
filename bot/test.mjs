@@ -12,7 +12,7 @@ import { P } from "./page.mjs";
 import { deriveWallet, SignDoc, signCosmosBytes, signEip1559, rlp, sendRawEvm, gweiStr } from "./sign.mjs";
 import { deficit, sharePct, quotaRoom, gasSpec, accountView, freshestView } from "./chain.mjs";
 import { tightenMinAsset, watchArrival } from "./stages.mjs";
-import { makeRunner, MAX_SIGNED_ATTEMPTS, ALERT_REQUOTES, fitsFeeCap, loopLossBound, cycleLossBound, nextUtcMidnight, planRecovery, lastSentAfter, counterBehind } from "./cycle.mjs";
+import { makeRunner, MAX_SIGNED_ATTEMPTS, ALERT_REQUOTES, fitsFeeCap, stallCheck, STALL_ALERT_MS, STALL_REPEAT_MS, loopLossBound, cycleLossBound, nextUtcMidnight, planRecovery, lastSentAfter, counterBehind } from "./cycle.mjs";
 import { CCTP, SEL, MESSAGE_SENT_TOPIC, depositForBurnV2Calldata, receiveMessageCalldata, orbiterMemo, parseMessageV1, parseMessageV2, checkBurnV1, checkBurnV2,
          messageFromReceipt, waitAttestation, irisMessages, v1NonceKey, packetSeqOf, nobleReceiptOf, checkNobleBurn } from "./cctp.mjs";
 import { STAGES as REAL_STAGES, CCTP_ORDER, SKIP_ORDER, RECOVERY_STARTS, cctpApprovalPlan, needBalance, SHORT_GRACE_MS } from "./stages.mjs";
@@ -309,6 +309,11 @@ const fresh = (amt = "100000000") => ({ cycle: { id: "t", amountIn: amt, idx: 0,
   ok(fitsFeeCap({ capMicro: 5000000n, bookedMicro: "4750000", amountIn: "100000000", bps: 10, feeMicro: 1664n }), "fee + worst-case loss that fit are allowed");
   ok(!fitsFeeCap({ capMicro: 5000000n, bookedMicro: "4990000", amountIn: "100000000", bps: 10, feeMicro: 1664n }), "a loop with 0.01 of budget left is refused");
   ok(!fitsFeeCap({ capMicro: 5000000n, bookedMicro: "4899000", amountIn: "100000000", bps: 10, feeMicro: 1664n }), "the exact fee tips it over: refused");
+  { const tr = {}, c = { id: "L1", idx: 1, order: ["C1", "C1m", "C2"] }, t0 = 1e12;
+    ok(stallCheck(tr, c, t0) === null && stallCheck(tr, c, t0 + STALL_ALERT_MS - 1) === null, "stall: quiet until a stage has sat for STALL_ALERT_MS");
+    ok(/L1 has been at C1m for 6 h/.test(stallCheck(tr, c, t0 + STALL_ALERT_MS)) && stallCheck(tr, c, t0 + STALL_ALERT_MS + 1) === null, "stall: alerts once, naming the stage");
+    ok(stallCheck(tr, c, t0 + STALL_ALERT_MS + STALL_REPEAT_MS) !== null, "stall: repeats after STALL_REPEAT_MS");
+    ok(stallCheck(tr, { ...c, idx: 2 }, t0 + 9 * STALL_ALERT_MS) === null && stallCheck(tr, null, t0 + 99 * STALL_ALERT_MS) === null && stallCheck(tr, null, t0 + 999 * STALL_ALERT_MS) === null, "stall: progress resets the clock; no cycle in flight never alerts"); }
   const m = nextUtcMidnight(Date.UTC(2026, 8, 24, 15, 4)); ok(m === Date.UTC(2026, 8, 25), "next UTC midnight");
   // recoveries run only the tail of the loop, so they reserve only what those stages can lose
   const O = ["A1", "A2", "A3"], z = { noble: 0n, avaxUsdc: 0n, injUsdc: 0n };

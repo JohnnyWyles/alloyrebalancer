@@ -35,6 +35,17 @@ export function cycleLossBound(c, order, bps) {
 export const loopLossBound = (amountIn, bps, order = ["A1", "A2", "A3"]) => cycleLossBound({ amountIn }, order, bps);
 /* what Skip quoted the loop would lose: each stage's amount in minus the amount its quote promised */
 export const quotedLoss = (c, order) => order.reduce((t, k) => { const st = c.stages[k]; return t + (st?.expected ? BigInt(st.amountIn) - BigInt(st.expected) : 0n); }, 0n);
+/* Stall watch. Every wait (fee caps, gas caps, rate-limit room, a late arrival) is retried silently, so funds can sit
+   mid-cycle for days without an error. A cycle that stays at one stage for STALL_ALERT_MS is reported once, then every
+   STALL_REPEAT_MS until it moves. `track` is the caller's in-memory record; with no cycle in flight nothing is stuck. */
+export const STALL_ALERT_MS = 6 * 3600e3, STALL_REPEAT_MS = 24 * 3600e3;
+export function stallCheck(track, cycle, now) {
+  const key = cycle ? `${cycle.id}:${cycle.idx}` : null;
+  if (key !== track.key) { Object.assign(track, { key, since: now, alertedAt: 0 }); return null; }
+  if (!key || now - track.since < STALL_ALERT_MS || (track.alertedAt && now - track.alertedAt < STALL_REPEAT_MS)) return null;
+  track.alertedAt = now;
+  return `${cycle.recovery ? "recovery" : "loop"} ${cycle.id} has been at ${(cycle.order || [])[cycle.idx] || `stage ${cycle.idx}`} for ${Math.round((now - track.since) / 3600e3)} h without progress`;
+}
 /* lossMicro overrides the full-loop bound (recoveries, cycles already in flight) */
 export function fitsFeeCap({ capMicro, bookedMicro, amountIn, bps, feeMicro, lossMicro }) {
   return BigInt(bookedMicro || 0) + BigInt(feeMicro || 0) + (lossMicro ?? loopLossBound(amountIn, bps)) <= BigInt(capMicro);
